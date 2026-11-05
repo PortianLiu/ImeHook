@@ -91,6 +91,15 @@ static ExpandFn g_orig = nullptr;
 static SpVec expandHook(void* scheme, const SpStr* key) {
     int mode = g_mode.load(std::memory_order_acquire);
 
+    // 前几次调用打点，便于确认钩子确实命中、以及改写后的 id 是否生效
+    static std::atomic<int> s_calls{0};
+    int n = s_calls.fetch_add(1, std::memory_order_relaxed);
+    if (n < 3) {
+        LOGI("call#%d mode=%d origId=%d targetId=%d key=%s", n, mode,
+             static_cast<int>(*static_cast<unsigned char*>(scheme)),
+             g_slot.load(std::memory_order_relaxed), spToStr(key).c_str());
+    }
+
     if (mode == 1) {
         auto* id = static_cast<unsigned char*>(scheme);
         unsigned char origId = *id;

@@ -1,6 +1,7 @@
 package lpt.imehook;
 
 import android.app.Activity;
+import android.app.ActivityManager;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -63,6 +64,7 @@ public class SettingsActivity extends Activity {
         super.onCreate(savedInstanceState);
         prefs = getSharedPreferences(ModuleConfig.PREFS, MODE_PRIVATE);
         store = new SchemeStore(prefs);
+        ModuleConfig saved = ModuleConfig.load(this);
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -75,7 +77,7 @@ public class SettingsActivity extends Activity {
         modeGroup.addView(radio("原生（不干预，跟随豆包自身的方案设置）", RDO_NATIVE));
         modeGroup.addView(radio("切换内置槽位（只改写方案 id，不替换表）", RDO_SLOT));
         modeGroup.addView(radio("注入自定义方案（改写 id 并替换该槽的表）", RDO_CUSTOM));
-        modeGroup.check(modeToRadio(prefs.getInt(ModuleConfig.KEY_MODE, ModuleConfig.MODE_OFF)));
+        modeGroup.check(modeToRadio(saved.mode));
         root.addView(modeGroup);
 
         // ---- 方案库 ----
@@ -97,7 +99,7 @@ public class SettingsActivity extends Activity {
         slotSpinner = new Spinner(this);
         slotSpinner.setAdapter(new ArrayAdapter<>(this,
                 android.R.layout.simple_spinner_dropdown_item, SLOT_LABELS));
-        int slot = prefs.getInt(ModuleConfig.KEY_SLOT, 6);
+        int slot = saved.slot;
         slotSpinner.setSelection(Math.min(Math.max(slot, 1), 7) - 1);
         root.addView(slotSpinner);
 
@@ -127,7 +129,7 @@ public class SettingsActivity extends Activity {
         TextView note = new TextView(this);
         note.setText("1. 注入是运行时行为：只在豆包输入法进程内 hook，不修改 APK、不写目标数据，"
                 + "强制停止/重启后自动恢复原生；配置存在本模块内。\n"
-                + "2. 改完设置必须重启豆包输入法才生效（本页提供按钮，需要 root）。\n"
+                + "2. 改完设置点「应用设置」即生效，不需要重启；「重启豆包输入法」也不需要 root。\n"
                 + "3. 槽 1/3/4/5/7 的方案身份是键位指纹推断（智能ABC/搜狗/微软/拼音加加/紫光），"
                 + "完整性未验证，行为异常属预期；槽 2/6 为原生可选。\n"
                 + "4. 自定义模式下，表内未覆盖的键会回退到目标槽的原生展开结果。");
@@ -393,9 +395,10 @@ public class SettingsActivity extends Activity {
         int slot = slotSpinner.getSelectedItemPosition() + 1;
         String name = selectedScheme();
 
-        SharedPreferences.Editor ed = prefs.edit()
-                .putInt(ModuleConfig.KEY_MODE, mode)
-                .putInt(ModuleConfig.KEY_SLOT, slot);
+        ModuleConfig cfg = ModuleConfig.load(this);
+        cfg.mode = mode;
+        cfg.slot = slot;
+        cfg.table = "";
 
         if (mode == ModuleConfig.MODE_CUSTOM) {
             String ini = store.iniOf(name);
@@ -403,37 +406,32 @@ public class SettingsActivity extends Activity {
                 toast("请先新建或导入一个自定义方案");
                 return;
             }
-            String table;
             try {
                 SchemeParser.Scheme s = SchemeParser.parse(ini);
                 if (s.table.isEmpty()) throw new IllegalArgumentException("解析结果为空表");
-                table = s.flat;
+                cfg.table = s.flat;
             } catch (IllegalArgumentException e) {
                 toast("解析失败：" + e.getMessage());
                 return;
             }
-            ed.putString(ModuleConfig.KEY_TABLE, table);
             store.setActive(name);
             store.setInjectedNote("方案 " + name
                     + " → 槽 " + slot + "（运行时注入，原件未修改，还原=关闭注入）");
+        } else if (mode == ModuleConfig.MODE_SLOT) {
+            store.setInjectedNote("内置槽 " + slot + "（未替换表）");
         } else {
-            ed.remove(ModuleConfig.KEY_TABLE);
-            if (mode == ModuleConfig.MODE_SLOT) {
-                store.setInjectedNote("内置槽 " + slot + "（未替换表）");
-            } else {
-                store.setInjectedNote("");
-            }
+            store.setInjectedNote("");
         }
-        ed.apply();
+        cfg.publish(this);
         updateStatus();
-        toast("已应用，请重启豆包输入法");
+        toast("已应用，目标进程在运行时立即生效");
     }
 
     private void restore() {
-        prefs.edit()
-                .putInt(ModuleConfig.KEY_MODE, ModuleConfig.MODE_OFF)
-                .remove(ModuleConfig.KEY_TABLE)
-                .apply();
+        ModuleConfig cfg = ModuleConfig.load(this);
+        cfg.mode = ModuleConfig.MODE_OFF;
+        cfg.table = "";
+        cfg.publish(this);
         store.setInjectedNote("已还原原生（注入为运行时行为，APK 从未被修改）");
         modeGroup.check(RDO_NATIVE);
         onModeChanged();
@@ -441,30 +439,30 @@ public class SettingsActivity extends Activity {
         toast("已还原为原生行为");
     }
 
+    /**
+     * 重启目标 App 不需要 root：
+     * 1) 配置里下发一个新的 exit 标记，目标进程内的钩子收到后自杀；
+     * 2) 再调 killBackgroundProcesses 兜底（钩子没装进进程时，输入法通常在后台）。
+     */
     private void restartTarget() {
-        toast("正在重启…");
-        new Thread(() -> {
-            boolean ok;
-            try {
-                Process p = Runtime.getRuntime().exec(
-                        new String[]{"su", "-c", "am force-stop " + TARGET_PKG});
-                ok = p.waitFor() == 0;
-            } catch (Exception e) {
-                ok = false;
-            }
-            boolean finalOk = ok;
-            runOnUiThread(() -> toast(finalOk
-                    ? "已强制停止豆包输入法，点击输入框即重新加载"
-                    : "重启失败：需要 root 权限"));
-        }).start();
+        ModuleConfig cfg = ModuleConfig.load(this);
+        cfg.exit = String.valueOf(System.currentTimeMillis());
+        cfg.publish(this);
+        try {
+            ActivityManager am = (ActivityManager) getSystemService(ACTIVITY_SERVICE);
+            am.killBackgroundProcesses(TARGET_PKG);
+        } catch (Throwable ignored) {
+        }
+        toast("已请求豆包输入法退出，再次点击输入框即重新加载");
     }
 
     // ---------------- 状态 ----------------
 
     private void updateStatus() {
         StringBuilder sb = new StringBuilder();
-        int mode = prefs.getInt(ModuleConfig.KEY_MODE, ModuleConfig.MODE_OFF);
-        int slot = prefs.getInt(ModuleConfig.KEY_SLOT, 6);
+        ModuleConfig cfg = ModuleConfig.load(this);
+        int mode = cfg.mode;
+        int slot = cfg.slot;
         sb.append("已保存：")
                 .append(mode == ModuleConfig.MODE_CUSTOM ? "注入自定义"
                         : mode == ModuleConfig.MODE_SLOT ? "切换内置槽" : "原生")
