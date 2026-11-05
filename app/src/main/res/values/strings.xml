@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">双拼方案扩展</string>
+    <string name="xposed_description">豆包输入法：切换内置隐藏双拼槽位，或注入自定义双拼映射</string>
+</resources>
