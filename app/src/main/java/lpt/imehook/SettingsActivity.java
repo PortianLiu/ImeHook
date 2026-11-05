@@ -53,9 +53,10 @@ public class SettingsActivity extends Activity {
     private Spinner schemeSpinner;
     private Spinner slotSpinner;
     private TextView slotTitle;
-    private EditText preview;
+    private EditText testInput;
+    private TextView testResult;
+    private SchemeParser.Scheme current;
     private TextView status;
-    private String autoPreview = "";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -100,13 +101,15 @@ public class SettingsActivity extends Activity {
         slotSpinner.setSelection(Math.min(Math.max(slot, 1), 7) - 1);
         root.addView(slotSpinner);
 
-        // ---- 预览 / 手改 ----
-        root.addView(label("映射预览（每行 key=拼音1,拼音2；可手改，注入时优先采用此内容）"));
-        preview = new EditText(this);
-        preview.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
-        preview.setMinLines(6);
-        preview.setHorizontallyScrolling(false);
-        root.addView(preview);
+        // ---- 试打 ----
+        root.addView(label("试打（输入双键当场查看解出的拼音，与注入内容无关）"));
+        testInput = new EditText(this);
+        testInput.setSingleLine(true);
+        testInput.setHint("例如 we、sf、ni、zh");
+        root.addView(testInput);
+        testResult = new TextView(this);
+        testResult.setPadding(0, dp(6), 0, 0);
+        root.addView(testResult);
 
         // ---- 操作 ----
         LinearLayout actions = new LinearLayout(this);
@@ -140,7 +143,8 @@ public class SettingsActivity extends Activity {
             public void onItemSelected(AdapterView<?> parent, android.view.View v, int pos, long id) {
                 String name = selectedScheme();
                 if (!name.isEmpty()) store.setActive(name);
-                fillPreview();
+                loadCurrent();
+                runTest();
                 updateStatus();
             }
 
@@ -148,10 +152,24 @@ public class SettingsActivity extends Activity {
             public void onNothingSelected(AdapterView<?> parent) {
             }
         });
+        testInput.addTextChangedListener(new android.text.TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int a, int b, int c) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence s, int a, int b, int c) {
+                runTest();
+            }
+
+            @Override
+            public void afterTextChanged(android.text.Editable s) {
+            }
+        });
 
         refreshSchemes();
         onModeChanged();
-        fillPreview();
+        loadCurrent();
         updateStatus();
     }
 
@@ -203,23 +221,46 @@ public class SettingsActivity extends Activity {
         return o == null ? "" : o.toString();
     }
 
-    /** 用当前方案的解析结果填充预览框；切换方案时覆盖，手动编辑只在应用前有效。 */
-    private void fillPreview() {
+    /** 把当前选中方案的解析结果装进内存，供试打使用。 */
+    private void loadCurrent() {
         String name = selectedScheme();
-        if (name.isEmpty()) {
-            autoPreview = "";
-            preview.setText("");
-            return;
-        }
+        current = null;
+        if (name.isEmpty()) return;
         String ini = store.iniOf(name);
         try {
-            SchemeParser.Scheme s = SchemeParser.parse(ini);
-            autoPreview = s.flat;
-            preview.setText(s.flat);
-        } catch (Exception e) {
-            autoPreview = "";
-            preview.setText("");
+            current = SchemeParser.parse(ini);
+        } catch (Exception ignored) {
+            current = null;
         }
+    }
+
+    /** 试打：按每 2 个字符一段查表，显示候选拼音。 */
+    private void runTest() {
+        String raw = testInput.getText().toString().trim().toLowerCase();
+        if (raw.isEmpty()) {
+            testResult.setText("");
+            return;
+        }
+        if (current == null) {
+            testResult.setText("当前方案未解析成功");
+            return;
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < raw.length(); i += 2) {
+            String k = raw.substring(i, Math.min(i + 2, raw.length()));
+            List<String> v = current.table.get(k);
+            sb.append(k).append(" → ");
+            if (v == null || v.isEmpty()) {
+                sb.append("（无候选）");
+            } else {
+                for (int j = 0; j < v.size(); j++) {
+                    if (j > 0) sb.append(", ");
+                    sb.append(v.get(j));
+                }
+            }
+            sb.append('\n');
+        }
+        testResult.setText(sb.toString());
     }
 
     private void showSchemeDialog(String originalName, String nameText, String content) {
@@ -261,7 +302,7 @@ public class SettingsActivity extends Activity {
                         store.setActive(name);
                         dlg.dismiss();
                         refreshSchemes();
-                        fillPreview();
+                        loadCurrent(); runTest();
                         updateStatus();
                         toast("已保存：" + name + "（" + s.table.size() + " 个键）");
                     } catch (IllegalArgumentException e) {
@@ -291,7 +332,7 @@ public class SettingsActivity extends Activity {
                         toast("名称已存在或未变化");
                     } else {
                         refreshSchemes();
-                        fillPreview();
+                        loadCurrent(); runTest();
                         updateStatus();
                     }
                 })
@@ -309,7 +350,7 @@ public class SettingsActivity extends Activity {
                 .setPositiveButton("删除", (d, w) -> {
                     store.remove(name);
                     refreshSchemes();
-                    fillPreview();
+                    loadCurrent(); runTest();
                     updateStatus();
                 })
                 .setNegativeButton("取消", null)
@@ -357,29 +398,23 @@ public class SettingsActivity extends Activity {
                 .putInt(ModuleConfig.KEY_SLOT, slot);
 
         if (mode == ModuleConfig.MODE_CUSTOM) {
-            String table = preview.getText().toString().trim();
-            if (table.isEmpty()) {
-                String ini = store.iniOf(name);
-                if (ini == null) {
-                    toast("请先新建或导入一个自定义方案");
-                    return;
-                }
-                try {
-                    SchemeParser.Scheme s = SchemeParser.parse(ini);
-                    if (s.table.isEmpty()) throw new IllegalArgumentException("解析结果为空表");
-                    table = s.flat;
-                } catch (IllegalArgumentException e) {
-                    toast("解析失败：" + e.getMessage());
-                    return;
-                }
+            String ini = store.iniOf(name);
+            if (ini == null) {
+                toast("请先新建或导入一个自定义方案");
+                return;
             }
-            if (!table.contains("=")) {
-                toast("预览内容不像映射表（应为 key=拼音,拼音）");
+            String table;
+            try {
+                SchemeParser.Scheme s = SchemeParser.parse(ini);
+                if (s.table.isEmpty()) throw new IllegalArgumentException("解析结果为空表");
+                table = s.flat;
+            } catch (IllegalArgumentException e) {
+                toast("解析失败：" + e.getMessage());
                 return;
             }
             ed.putString(ModuleConfig.KEY_TABLE, table);
             store.setActive(name);
-            store.setInjectedNote("方案 " + (name.isEmpty() ? "（手改表）" : name)
+            store.setInjectedNote("方案 " + name
                     + " → 槽 " + slot + "（运行时注入，原件未修改，还原=关闭注入）");
         } else {
             ed.remove(ModuleConfig.KEY_TABLE);
@@ -448,10 +483,6 @@ public class SettingsActivity extends Activity {
                 sb.append("方案 ").append(name).append("：解析失败（").append(e.getMessage()).append("）\n");
             }
         }
-        String table = preview.getText().toString().trim();
-        sb.append("预览：").append(table.isEmpty() ? "空" :
-                table.split("\n").length + " 行" + (table.equals(autoPreview.trim()) ? "（自动生成）" : "（已手改）"))
-                .append('\n');
         String inj = store.injectedNote();
         if (!inj.isEmpty()) sb.append("上次注入：").append(inj).append('\n');
         status.setText(sb.toString());
