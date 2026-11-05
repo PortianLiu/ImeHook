@@ -1,8 +1,13 @@
 package lpt.imehook;
 
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.Intent;
 import android.content.SharedPreferences;
+import android.net.Uri;
 import android.os.Bundle;
+import android.text.InputType;
+import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
@@ -14,95 +19,451 @@ import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.BufferedReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.util.List;
+
 public class SettingsActivity extends Activity {
 
-    private static final int ID_OFF = 100;
-    private static final int ID_SLOT = 101;
-    private static final int ID_CUSTOM = 102;
+    private static final String TARGET_PKG = "com.bytedance.android.doubaoime";
 
+    /** 单选按钮 id 与 ModuleConfig 模式值显式对应，避免顺序错位。 */
+    private static final int RDO_NATIVE = 101;
+    private static final int RDO_SLOT = 102;
+    private static final int RDO_CUSTOM = 103;
+
+    private static final int REQ_IMPORT = 1001;
+
+    /** 槽位身份：2/6 有字符串实测，其余为键位指纹推断（不保证）。 */
     private static final String[] SLOT_LABELS = {
-            "槽 1（方案未知，未验证）",
-            "槽 2（自然码，原生可选）",
-            "槽 3（方案未知，未验证）",
-            "槽 4（方案未知，未验证）",
-            "槽 5（方案未知，未验证）",
-            "槽 6（小鹤，原生可选）",
-            "槽 7（方案未知，未验证）",
+            "槽 1 · 智能ABC双拼（推断，不保证）",
+            "槽 2 · 自然码（原生可选）",
+            "槽 3 · 搜狗双拼（推断，不保证）",
+            "槽 4 · 微软双拼（推断，不保证）",
+            "槽 5 · 拼音加加双拼（推断，不保证）",
+            "槽 6 · 小鹤（原生可选）",
+            "槽 7 · 紫光双拼（推断，不保证）",
     };
 
+    private SharedPreferences prefs;
+    private SchemeStore store;
+
     private RadioGroup modeGroup;
+    private Spinner schemeSpinner;
     private Spinner slotSpinner;
-    private EditText tableEdit;
+    private TextView slotTitle;
+    private EditText preview;
+    private TextView status;
+    private String autoPreview = "";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        SharedPreferences prefs = getSharedPreferences(ModuleConfig.PREFS, MODE_PRIVATE);
+        prefs = getSharedPreferences(ModuleConfig.PREFS, MODE_PRIVATE);
+        store = new SchemeStore(prefs);
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         int pad = dp(16);
         root.setPadding(pad, pad, pad, pad);
 
-        TextView modeLabel = new TextView(this);
-        modeLabel.setText("模式");
-        root.addView(modeLabel);
-
+        // ---- 模式 ----
+        root.addView(label("模式"));
         modeGroup = new RadioGroup(this);
-        modeGroup.addView(radio("关闭（原生行为）", ID_OFF));
-        modeGroup.addView(radio("启用内置槽位（下方选择槽）", ID_SLOT));
-        modeGroup.addView(radio("自定义方案（下方编辑映射表）", ID_CUSTOM));
-        int mode = prefs.getInt(ModuleConfig.KEY_MODE, ModuleConfig.MODE_OFF);
-        modeGroup.check(mode == ModuleConfig.MODE_SLOT ? ID_SLOT
-                : mode == ModuleConfig.MODE_CUSTOM ? ID_CUSTOM : ID_OFF);
+        modeGroup.addView(radio("原生（不干预，跟随豆包自身的方案设置）", RDO_NATIVE));
+        modeGroup.addView(radio("切换内置槽位（只改写方案 id，不替换表）", RDO_SLOT));
+        modeGroup.addView(radio("注入自定义方案（改写 id 并替换该槽的表）", RDO_CUSTOM));
+        modeGroup.check(modeToRadio(prefs.getInt(ModuleConfig.KEY_MODE, ModuleConfig.MODE_OFF)));
         root.addView(modeGroup);
 
-        TextView slotLabel = new TextView(this);
-        slotLabel.setText("内置槽位（仅槽位模式使用）");
-        root.addView(slotLabel);
+        // ---- 方案库 ----
+        root.addView(label("自定义方案库"));
+        schemeSpinner = new Spinner(this);
+        root.addView(schemeSpinner);
 
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.addView(button("新建", v -> showSchemeDialog(null, "", "")));
+        row.addView(button("导入文件", v -> pickFile()));
+        row.addView(button("重命名", v -> showRenameDialog()));
+        row.addView(button("删除", v -> confirmDelete()));
+        root.addView(row);
+
+        // ---- 槽位 ----
+        slotTitle = label("目标槽位");
+        root.addView(slotTitle);
         slotSpinner = new Spinner(this);
         slotSpinner.setAdapter(new ArrayAdapter<>(this,
                 android.R.layout.simple_spinner_dropdown_item, SLOT_LABELS));
-        int slot = prefs.getInt(ModuleConfig.KEY_SLOT, 2);
+        int slot = prefs.getInt(ModuleConfig.KEY_SLOT, 6);
         slotSpinner.setSelection(Math.min(Math.max(slot, 1), 7) - 1);
         root.addView(slotSpinner);
 
-        TextView tableLabel = new TextView(this);
-        tableLabel.setText("自定义映射表（仅自定义模式使用），格式：每行 按键=拼音1,拼音2");
-        root.addView(tableLabel);
+        // ---- 预览 / 手改 ----
+        root.addView(label("映射预览（每行 key=拼音1,拼音2；可手改，注入时优先采用此内容）"));
+        preview = new EditText(this);
+        preview.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        preview.setMinLines(6);
+        preview.setHorizontallyScrolling(false);
+        root.addView(preview);
 
-        tableEdit = new EditText(this);
-        tableEdit.setMinLines(6);
-        tableEdit.setHint("例：\nvv=zhong,chong\nul=shuang");
-        tableEdit.setText(prefs.getString(ModuleConfig.KEY_TABLE, ""));
-        root.addView(tableEdit);
+        // ---- 操作 ----
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        actions.addView(button("应用设置", v -> apply()));
+        actions.addView(button("还原原生", v -> restore()));
+        root.addView(actions);
+        root.addView(button("重启豆包输入法", v -> restartTarget()));
 
-        Button save = new Button(this);
-        save.setText("保存");
-        save.setOnClickListener(v -> {
-            int checked = modeGroup.getCheckedRadioButtonId();
-            int newMode = checked == ID_SLOT ? ModuleConfig.MODE_SLOT
-                    : checked == ID_CUSTOM ? ModuleConfig.MODE_CUSTOM
-                    : ModuleConfig.MODE_OFF;
-            prefs.edit()
-                    .putInt(ModuleConfig.KEY_MODE, newMode)
-                    .putInt(ModuleConfig.KEY_SLOT, slotSpinner.getSelectedItemPosition() + 1)
-                    .putString(ModuleConfig.KEY_TABLE, tableEdit.getText().toString())
-                    .apply();
-            Toast.makeText(this, "已保存，请强制停止并重启豆包输入法", Toast.LENGTH_LONG).show();
-        });
-        root.addView(save);
+        status = new TextView(this);
+        status.setPadding(0, dp(12), 0, 0);
+        root.addView(status);
 
+        root.addView(label("说明"));
         TextView note = new TextView(this);
-        note.setText("说明：\n1. 保存后需强制停止并重启豆包输入法才生效；\n"
-                + "2. 隐藏槽位（1/3/4/5/7）的方案身份与完整性尚未验证，行为异常属预期；\n"
-                + "3. 自定义模式下未列出的按键回退到原生方案。");
+        note.setText("1. 注入是运行时行为：只在豆包输入法进程内 hook，不修改 APK、不写目标数据，"
+                + "强制停止/重启后自动恢复原生；配置存在本模块内。\n"
+                + "2. 改完设置必须重启豆包输入法才生效（本页提供按钮，需要 root）。\n"
+                + "3. 槽 1/3/4/5/7 的方案身份是键位指纹推断（智能ABC/搜狗/微软/拼音加加/紫光），"
+                + "完整性未验证，行为异常属预期；槽 2/6 为原生可选。\n"
+                + "4. 自定义模式下，表内未覆盖的键会回退到目标槽的原生展开结果。");
         root.addView(note);
 
         ScrollView scroll = new ScrollView(this);
         scroll.addView(root);
         setContentView(scroll);
+
+        modeGroup.setOnCheckedChangeListener((g, id) -> onModeChanged());
+        schemeSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, android.view.View v, int pos, long id) {
+                String name = selectedScheme();
+                if (!name.isEmpty()) store.setActive(name);
+                fillPreview();
+                updateStatus();
+            }
+
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {
+            }
+        });
+
+        refreshSchemes();
+        onModeChanged();
+        fillPreview();
+        updateStatus();
+    }
+
+    // ---------------- 模式 ----------------
+
+    private int radioToMode(int radioId) {
+        if (radioId == RDO_SLOT) return ModuleConfig.MODE_SLOT;
+        if (radioId == RDO_CUSTOM) return ModuleConfig.MODE_CUSTOM;
+        return ModuleConfig.MODE_OFF;
+    }
+
+    private int modeToRadio(int mode) {
+        if (mode == ModuleConfig.MODE_SLOT) return RDO_SLOT;
+        if (mode == ModuleConfig.MODE_CUSTOM) return RDO_CUSTOM;
+        return RDO_NATIVE;
+    }
+
+    private int currentMode() {
+        return radioToMode(modeGroup.getCheckedRadioButtonId());
+    }
+
+    private void onModeChanged() {
+        int mode = currentMode();
+        boolean usesSlot = mode != ModuleConfig.MODE_OFF;
+        slotSpinner.setEnabled(usesSlot);
+        slotSpinner.setAlpha(usesSlot ? 1f : 0.4f);
+        slotTitle.setText(mode == ModuleConfig.MODE_CUSTOM
+                ? "注入目标槽位（表会覆盖这个槽）"
+                : mode == ModuleConfig.MODE_SLOT
+                ? "切换目标槽位（使用该槽的原生表）"
+                : "目标槽位（原生模式下不使用）");
+    }
+
+    // ---------------- 方案库 ----------------
+
+    private void refreshSchemes() {
+        List<String> names = store.names();
+        ArrayAdapter<String> ad = new ArrayAdapter<>(this,
+                android.R.layout.simple_spinner_dropdown_item, names);
+        schemeSpinner.setAdapter(ad);
+        String active = store.active();
+        int idx = names.indexOf(active);
+        if (idx >= 0) schemeSpinner.setSelection(idx);
+        else if (!names.isEmpty()) store.setActive(names.get(0));
+    }
+
+    private String selectedScheme() {
+        Object o = schemeSpinner.getSelectedItem();
+        return o == null ? "" : o.toString();
+    }
+
+    /** 用当前方案的解析结果填充预览框；切换方案时覆盖，手动编辑只在应用前有效。 */
+    private void fillPreview() {
+        String name = selectedScheme();
+        if (name.isEmpty()) {
+            autoPreview = "";
+            preview.setText("");
+            return;
+        }
+        String ini = store.iniOf(name);
+        try {
+            SchemeParser.Scheme s = SchemeParser.parse(ini);
+            autoPreview = s.flat;
+            preview.setText(s.flat);
+        } catch (Exception e) {
+            autoPreview = "";
+            preview.setText("");
+        }
+    }
+
+    private void showSchemeDialog(String originalName, String nameText, String content) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(16);
+        box.setPadding(pad, pad, pad, pad);
+
+        EditText nameEdit = new EditText(this);
+        nameEdit.setHint("方案名（如 小鹤改进版）");
+        nameEdit.setText(nameText);
+        box.addView(nameEdit);
+
+        EditText contentEdit = new EditText(this);
+        contentEdit.setHint("[sheng]\nzh=v\nch=i\n\n[yun]\niai=d\n\n[yinjie]\na=aa");
+        contentEdit.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        contentEdit.setMinLines(10);
+        contentEdit.setText(content);
+        box.addView(contentEdit);
+
+        AlertDialog dlg = new AlertDialog.Builder(this)
+                .setTitle(originalName == null ? "新建方案" : "编辑 " + originalName)
+                .setView(box)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("保存", null)
+                .create();
+        dlg.setOnShowListener(x -> dlg.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(v -> {
+                    String name = nameEdit.getText().toString().trim();
+                    String text = contentEdit.getText().toString();
+                    if (name.isEmpty()) {
+                        toast("请填写方案名");
+                        return;
+                    }
+                    try {
+                        SchemeParser.Scheme s = SchemeParser.parse(text);
+                        if (s.table.isEmpty()) throw new IllegalArgumentException("解析结果为空表");
+                        store.put(name, text, s.normalizedJson());
+                        store.setActive(name);
+                        dlg.dismiss();
+                        refreshSchemes();
+                        fillPreview();
+                        updateStatus();
+                        toast("已保存：" + name + "（" + s.table.size() + " 个键）");
+                    } catch (IllegalArgumentException e) {
+                        toast("解析失败：" + e.getMessage());
+                    }
+                }));
+        dlg.show();
+    }
+
+    private void showRenameDialog() {
+        String old = selectedScheme();
+        if (old.isEmpty()) {
+            toast("先选择一个方案");
+            return;
+        }
+        EditText edit = new EditText(this);
+        edit.setText(old);
+        new AlertDialog.Builder(this)
+                .setTitle("重命名")
+                .setView(edit)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("确定", (d, w) -> {
+                    String name = edit.getText().toString().trim();
+                    if (name.isEmpty()) {
+                        toast("名称不能为空");
+                    } else if (!store.rename(old, name)) {
+                        toast("名称已存在或未变化");
+                    } else {
+                        refreshSchemes();
+                        fillPreview();
+                        updateStatus();
+                    }
+                })
+                .show();
+    }
+
+    private void confirmDelete() {
+        String name = selectedScheme();
+        if (name.isEmpty()) {
+            toast("先选择一个方案");
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("删除 " + name + "？")
+                .setPositiveButton("删除", (d, w) -> {
+                    store.remove(name);
+                    refreshSchemes();
+                    fillPreview();
+                    updateStatus();
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    // ---------------- 导入 ----------------
+
+    private void pickFile() {
+        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        i.setType("*/*");
+        startActivityForResult(i, REQ_IMPORT);
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQ_IMPORT || resultCode != RESULT_OK || data == null) return;
+        Uri uri = data.getData();
+        if (uri == null) return;
+        try (InputStream in = getContentResolver().openInputStream(uri);
+             BufferedReader r = new BufferedReader(new InputStreamReader(in))) {
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = r.readLine()) != null) sb.append(line).append('\n');
+            String name = uri.getLastPathSegment();
+            if (name != null && name.contains("/")) name = name.substring(name.lastIndexOf('/') + 1);
+            if (name != null && name.lastIndexOf('.') > 0) name = name.substring(0, name.lastIndexOf('.'));
+            showSchemeDialog(null, name == null ? "" : name, sb.toString());
+        } catch (Exception e) {
+            toast("读取失败：" + e.getMessage());
+        }
+    }
+
+    // ---------------- 应用 / 还原 / 重启 ----------------
+
+    private void apply() {
+        int mode = currentMode();
+        int slot = slotSpinner.getSelectedItemPosition() + 1;
+        String name = selectedScheme();
+
+        SharedPreferences.Editor ed = prefs.edit()
+                .putInt(ModuleConfig.KEY_MODE, mode)
+                .putInt(ModuleConfig.KEY_SLOT, slot);
+
+        if (mode == ModuleConfig.MODE_CUSTOM) {
+            String table = preview.getText().toString().trim();
+            if (table.isEmpty()) {
+                String ini = store.iniOf(name);
+                if (ini == null) {
+                    toast("请先新建或导入一个自定义方案");
+                    return;
+                }
+                try {
+                    SchemeParser.Scheme s = SchemeParser.parse(ini);
+                    if (s.table.isEmpty()) throw new IllegalArgumentException("解析结果为空表");
+                    table = s.flat;
+                } catch (IllegalArgumentException e) {
+                    toast("解析失败：" + e.getMessage());
+                    return;
+                }
+            }
+            if (!table.contains("=")) {
+                toast("预览内容不像映射表（应为 key=拼音,拼音）");
+                return;
+            }
+            ed.putString(ModuleConfig.KEY_TABLE, table);
+            store.setActive(name);
+            store.setInjectedNote("方案 " + (name.isEmpty() ? "（手改表）" : name)
+                    + " → 槽 " + slot + "（运行时注入，原件未修改，还原=关闭注入）");
+        } else {
+            ed.remove(ModuleConfig.KEY_TABLE);
+            if (mode == ModuleConfig.MODE_SLOT) {
+                store.setInjectedNote("内置槽 " + slot + "（未替换表）");
+            } else {
+                store.setInjectedNote("");
+            }
+        }
+        ed.apply();
+        updateStatus();
+        toast("已应用，请重启豆包输入法");
+    }
+
+    private void restore() {
+        prefs.edit()
+                .putInt(ModuleConfig.KEY_MODE, ModuleConfig.MODE_OFF)
+                .remove(ModuleConfig.KEY_TABLE)
+                .apply();
+        store.setInjectedNote("已还原原生（注入为运行时行为，APK 从未被修改）");
+        modeGroup.check(RDO_NATIVE);
+        onModeChanged();
+        updateStatus();
+        toast("已还原为原生行为");
+    }
+
+    private void restartTarget() {
+        toast("正在重启…");
+        new Thread(() -> {
+            boolean ok;
+            try {
+                Process p = Runtime.getRuntime().exec(
+                        new String[]{"su", "-c", "am force-stop " + TARGET_PKG});
+                ok = p.waitFor() == 0;
+            } catch (Exception e) {
+                ok = false;
+            }
+            boolean finalOk = ok;
+            runOnUiThread(() -> toast(finalOk
+                    ? "已强制停止豆包输入法，点击输入框即重新加载"
+                    : "重启失败：需要 root 权限"));
+        }).start();
+    }
+
+    // ---------------- 状态 ----------------
+
+    private void updateStatus() {
+        StringBuilder sb = new StringBuilder();
+        int mode = prefs.getInt(ModuleConfig.KEY_MODE, ModuleConfig.MODE_OFF);
+        int slot = prefs.getInt(ModuleConfig.KEY_SLOT, 6);
+        sb.append("已保存：")
+                .append(mode == ModuleConfig.MODE_CUSTOM ? "注入自定义"
+                        : mode == ModuleConfig.MODE_SLOT ? "切换内置槽" : "原生")
+                .append(mode == ModuleConfig.MODE_OFF ? "" : "，槽 " + slot)
+                .append('\n');
+
+        String name = selectedScheme();
+        if (!name.isEmpty()) {
+            String ini = store.iniOf(name);
+            try {
+                SchemeParser.Scheme s = SchemeParser.parse(ini);
+                sb.append("方案 ").append(name)
+                        .append("：").append(s.table.size()).append(" 键有候选")
+                        .append("，占位键 ").append(s.placeholders).append('\n');
+            } catch (Exception e) {
+                sb.append("方案 ").append(name).append("：解析失败（").append(e.getMessage()).append("）\n");
+            }
+        }
+        String table = preview.getText().toString().trim();
+        sb.append("预览：").append(table.isEmpty() ? "空" :
+                table.split("\n").length + " 行" + (table.equals(autoPreview.trim()) ? "（自动生成）" : "（已手改）"))
+                .append('\n');
+        String inj = store.injectedNote();
+        if (!inj.isEmpty()) sb.append("上次注入：").append(inj).append('\n');
+        status.setText(sb.toString());
+    }
+
+    // ---------------- 小工具 ----------------
+
+    private TextView label(String text) {
+        TextView t = new TextView(this);
+        t.setText(text);
+        t.setPadding(0, dp(12), 0, dp(4));
+        return t;
     }
 
     private RadioButton radio(String text, int id) {
@@ -110,6 +471,17 @@ public class SettingsActivity extends Activity {
         b.setText(text);
         b.setId(id);
         return b;
+    }
+
+    private Button button(String text, android.view.View.OnClickListener l) {
+        Button b = new Button(this);
+        b.setText(text);
+        b.setOnClickListener(l);
+        return b;
+    }
+
+    private void toast(String s) {
+        Toast.makeText(this, s, Toast.LENGTH_LONG).show();
     }
 
     private int dp(int v) {

@@ -9,7 +9,11 @@
 // 三种模式：
 //   0 关闭：直通
 //   1 槽位：入口改写 scheme 首字节为目标槽 id，调用原函数后恢复（启用隐藏内置方案）
-//   2 自定义：命中自定义表则自行构造返回 vector，未命中回退原函数
+//   2 自定义：先改写 id 到目标槽（统领单函数但按 id 选表，改写即「切换到该槽」），
+//             命中自定义表则自行构造返回 vector，未命中回退该槽的原生展开结果
+//
+// 注意：sub_59953C 是 7 个槽共用的唯一收口，但表由 *scheme 的 id 选择，
+// 因此「注入某个槽」= 在这个收口上按 id 生效，hook 本身不需要 7 份。
 
 #include <jni.h>
 #include <dlfcn.h>
@@ -97,10 +101,21 @@ static SpVec expandHook(void* scheme, const SpStr* key) {
     }
 
     if (mode == 2) {
+        auto* id = static_cast<unsigned char*>(scheme);
+        unsigned char origId = *id;
+        *id = static_cast<unsigned char>(g_slot.load(std::memory_order_relaxed));
+
         auto tbl = std::atomic_load(&g_table);
         std::string k = spToStr(key);
         auto it = tbl->find(k);
-        if (it != tbl->end()) return makeVec(it->second);
+        if (it != tbl->end()) {
+            *id = origId;
+            return makeVec(it->second);
+        }
+        // 未覆盖的键回退到目标槽的原生结果（此时 id 已被改成目标槽）
+        SpVec r = g_orig(scheme, key);
+        *id = origId;
+        return r;
     }
 
     return g_orig(scheme, key);
