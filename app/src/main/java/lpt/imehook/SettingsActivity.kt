@@ -18,6 +18,18 @@ class SettingsActivity : ComponentActivity() {
             if (uri != null) ui.importFrom(uri)
         }
 
+    private val createDoc =
+        registerForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+            if (uri == null) return@registerForActivityResult
+            try {
+                contentResolver.openOutputStream(uri)?.use { out ->
+                    out.write(ui.templateContent().toByteArray())
+                }
+            } catch (e: Exception) {
+                android.widget.Toast.makeText(this, "导出失败：${e.message}", android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -32,7 +44,11 @@ class SettingsActivity : ComponentActivity() {
                     .isAppearanceLightStatusBars = !dark
             }
             ImeHookTheme {
-                SettingsScreen(ui, onImport = { openDoc.launch(arrayOf("*/*")) })
+                SettingsScreen(
+                    ui,
+                    onImport = { openDoc.launch(arrayOf("*/*")) },
+                    onExport = { createDoc.launch(ui.exportTemplateName()) },
+                )
             }
         }
     }
