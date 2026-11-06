@@ -40,8 +40,6 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
 
     var editing by mutableStateOf<Draft?>(null)
         private set
-    var renaming by mutableStateOf<String?>(null)
-        private set
     var deleting by mutableStateOf<String?>(null)
         private set
     var patches by mutableStateOf<List<String>?>(null)
@@ -65,6 +63,7 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
         var ziMode: Int,
         var ziKey: String,
         var ziPriority: Boolean,
+        var newName: String,
     )
 
     init {
@@ -76,17 +75,15 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
 
     fun chooseMode(m: Int) { mode = m }
     fun chooseSlot(s: Int) { slot = s }
-    fun chooseTab(t: Int) {
-        tab = t
-        if (t == 1) loadEditModel()
-    }
+    fun chooseTab(t: Int) { tab = t }
 
+    // 编辑区与方案选中项的联动由界面层 LaunchedEffect(ui.selected) 驱动，
+    // 这里只改选中态，不手动触发编辑区刷新。
     fun select(name: String) {
         if (name == selected) return
         selected = name
         if (name.isNotEmpty()) store.setActive(name)
         reloadScheme()
-        if (tab == 1) loadEditModel()
         runTest()
         updateStatus()
     }
@@ -161,19 +158,13 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
         loadEditModel()
     }
 
-    fun requestRename(name: String? = null) {
-        val target = name ?: selected
-        if (target.isEmpty()) { toast("先选择一个方案"); return }
-        renaming = target
-    }
-
     fun requestDelete(name: String? = null) {
         val target = name ?: selected
         if (target.isEmpty()) { toast("先选择一个方案"); return }
         deleting = target
     }
 
-    fun dismissDialog() { editing = null; renaming = null; deleting = null; patches = null; iniEditing = null }
+    fun dismissDialog() { editing = null; deleting = null; patches = null; iniEditing = null }
 
     /** 打开 ini 编辑：内容为 app 处理过（补全后）的那份。 */
     fun openIniEditor() {
@@ -181,20 +172,27 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
         iniEditing = store.iniOf(selected) ?: ""
     }
 
-    fun saveIni(text: String) {
+    /** 保存 ini（可同时改名）。 */
+    fun saveIni(newName: String, text: String) {
         val name = selected
         if (name.isEmpty()) { toast("先选择一个方案"); return }
+        val target = newName.trim()
+        if (target.isEmpty()) { toast("名称不能为空"); return }
+        if (target != name && store.exists(target)) { toast("名称已存在"); return }
         val pr = try { SchemeParser.parseWithPatches(text) }
         catch (e: IllegalArgumentException) { toast("解析失败：" + e.message); return }
         if (pr.scheme.table.isEmpty()) { toast("解析结果为空表"); return }
-        store.put(name, pr.ini, pr.scheme.normalizedJson(),
-            store.zeroInitialMode(name), store.zeroInitialKey(name), store.zeroInitialPriority(name))
+        if (target != name) {
+            store.rename(name, target)
+            selected = target
+            store.setActive(target)
+        }
+        store.put(target, pr.ini, pr.scheme.normalizedJson(),
+            store.zeroInitialMode(target), store.zeroInitialKey(target), store.zeroInitialPriority(target))
         iniEditing = null
+        refreshSchemes()
         loadEditModel()
-        reloadScheme()
-        runTest()
-        updateStatus()
-        if (pr.patches.isNotEmpty()) patches = pr.patches else toast("已保存：$name")
+        if (pr.patches.isNotEmpty()) patches = pr.patches else toast("已保存：$target")
     }
 
     fun saveDraft(draft: Draft) {
@@ -215,22 +213,11 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
         else toast("已保存：$name（${pr.scheme.table.size} 个键有候选）")
     }
 
-    fun renameTo(newName: String) {
-        val old = renaming ?: return
-        val name = newName.trim()
-        if (name.isEmpty()) { toast("名称不能为空"); return }
-        if (!store.rename(old, name)) { toast("名称已存在或未变化"); return }
-        if (selected == old) selected = name
-        renaming = null
-        refreshSchemes()
-    }
-
     fun confirmDelete() {
         val name = deleting ?: return
         store.remove(name)
         deleting = null
         if (selected == name) selected = ""
-        editModel = null
         refreshSchemes()
     }
 
@@ -268,6 +255,7 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
             ziMode = store.zeroInitialMode(selected),
             ziKey = store.zeroInitialKey(selected),
             ziPriority = store.zeroInitialPriority(selected),
+            newName = selected,
         )
     }
 
@@ -306,17 +294,31 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
         editModel = m.copy(ziPriority = pri)
     }
 
+    fun setSchemeName(name: String) {
+        val m = editModel ?: return
+        editModel = m.copy(newName = name)
+    }
+
     fun saveEditModel() {
         val m = editModel ?: return
+        val target = m.newName.trim()
+        if (target.isEmpty()) { toast("名称不能为空"); return }
+        if (target != m.name && store.exists(target)) { toast("名称已存在"); return }
         val ini = buildIni(m)
         val pr = try { SchemeParser.parseWithPatches(ini) }
         catch (e: IllegalArgumentException) { toast("解析失败：" + e.message); return }
         if (pr.scheme.table.isEmpty()) { toast("解析结果为空表"); return }
-        store.put(m.name, ini, pr.scheme.normalizedJson(), m.ziMode, m.ziKey, m.ziPriority)
-        reloadScheme()
-        runTest()
-        updateStatus()
-        toast("已保存：${m.name}")
+        if (target != m.name) {
+            store.rename(m.name, target)
+            if (selected == m.name) {
+                selected = target
+                store.setActive(target)
+            }
+        }
+        store.put(target, ini, pr.scheme.normalizedJson(), m.ziMode, m.ziKey, m.ziPriority)
+        refreshSchemes()
+        loadEditModel()
+        toast("已保存：$target")
     }
 
     /** 把结构表还原成 ini 文本。 */

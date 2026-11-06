@@ -1,5 +1,6 @@
 package lpt.imehook
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -15,17 +16,15 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Done
-import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -38,7 +37,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
-import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -53,12 +52,15 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -130,7 +132,6 @@ fun SettingsScreen(ui: SettingsUiState, onImport: () -> Unit, onExport: () -> Un
 
     ui.editing?.let { draft -> SchemeDialog(draft, ui, onImport) { ui.dismissDialog() } }
     ui.iniEditing?.let { ini -> IniDialog(ini, ui) { ui.dismissDialog() } }
-    ui.renaming?.let { name -> RenameDialog(name, ui) { ui.dismissDialog() } }
     ui.deleting?.let { name -> DeleteDialog(name, ui) { ui.dismissDialog() } }
     ui.patches?.takeIf { it.isNotEmpty() }?.let { list ->
         PatchesDialog(list) { ui.dismissDialog() }
@@ -391,8 +392,14 @@ private fun AboutCard() {
 
 @Composable
 private fun Tab2(ui: SettingsUiState, onImport: () -> Unit, onExport: () -> Unit) {
+    // 编辑区与方案栏选中项双向联动：任何途径（列表点选、删除回退、导入完成）
+    // 改变了 selected，这里都会自动重建编辑模型。
+    LaunchedEffect(ui.selected) { ui.loadEditModel() }
     Column(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 8.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         SchemeListCard(ui, onImport, onExport)
@@ -404,8 +411,10 @@ private fun Tab2(ui: SettingsUiState, onImport: () -> Unit, onExport: () -> Unit
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         } else {
-            EditorCard(ui, m, Modifier.weight(1f))
+            EditorCard(ui, m)
         }
+        // 底部留几行空位的距离
+        Spacer(Modifier.height(96.dp))
     }
 }
 
@@ -424,17 +433,14 @@ private fun SchemeListCard(ui: SettingsUiState, onImport: () -> Unit, onExport: 
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             } else {
-                LazyColumn(modifier = Modifier.heightIn(max = 180.dp)) {
-                    items(ui.schemes) { name ->
+                Column {
+                    ui.schemes.forEach { name ->
                         Row(
                             modifier = Modifier.fillMaxWidth().clickable { ui.select(name) },
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             RadioButton(selected = name == ui.selected, onClick = { ui.select(name) })
                             Text(name, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
-                            IconButton(onClick = { ui.requestRename(name) }) {
-                                Icon(Icons.Filled.Edit, contentDescription = "重命名", modifier = Modifier.size(18.dp))
-                            }
                             IconButton(onClick = { ui.requestDelete(name) }) {
                                 Icon(Icons.Filled.Delete, contentDescription = "删除", modifier = Modifier.size(18.dp))
                             }
@@ -452,15 +458,14 @@ private fun SchemeListCard(ui: SettingsUiState, onImport: () -> Unit, onExport: 
 
 // ---------------- 方案编辑 ----------------
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun EditorCard(ui: SettingsUiState, m: SettingsUiState.SchemeModel, modifier: Modifier = Modifier) {
+private fun EditorCard(ui: SettingsUiState, m: SettingsUiState.SchemeModel) {
     var section by remember(m.name) { mutableStateOf(0) }
     Card(
-        modifier = modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
     ) {
-        Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     "方案编辑·${m.name}",
@@ -470,36 +475,68 @@ private fun EditorCard(ui: SettingsUiState, m: SettingsUiState.SchemeModel, modi
                     modifier = Modifier.weight(1f),
                 )
                 IconButton(onClick = ui::openIniEditor) {
-                    Icon(Icons.Filled.Edit, contentDescription = "编辑 ini", modifier = Modifier.size(20.dp))
+                    Icon(Icons.Filled.ContentPaste, contentDescription = "编辑 ini", modifier = Modifier.size(20.dp))
                 }
                 IconButton(onClick = ui::saveEditModel) {
                     Icon(Icons.Filled.Done, contentDescription = "保存", modifier = Modifier.size(20.dp))
                 }
             }
 
-            ZeroInitialRow(ui, m)
-
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(selected = section == 0, onClick = { section = 0 }, label = { Text("声母") })
-                FilterChip(selected = section == 1, onClick = { section = 1 }, label = { Text("韵母") })
-                FilterChip(selected = section == 2, onClick = { section = 2 }, label = { Text("音节") })
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("方案名", style = MaterialTheme.typography.bodySmall, modifier = Modifier.width(52.dp))
+                CompactField(m.newName, { ui.setSchemeName(it) }, Modifier.weight(1f))
             }
 
-            LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f)) {
+            ZeroInitialRow(ui, m)
+
+            // 分段标签：左对齐小矩形（选中加深），下方一条贯穿整行的长横线
+            Column {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    SectionTab("声母", section == 0) { section = 0 }
+                    SectionTab("韵母", section == 1) { section = 1 }
+                    SectionTab("音节", section == 2) { section = 2 }
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
+            }
+
+            // 表体不做内部滚动，跟随整页一起生长
+            Column(modifier = Modifier.fillMaxWidth()) {
                 when (section) {
-                    0 -> items(SettingsUiState.INITIALS) { init ->
+                    0 -> SettingsUiState.INITIALS.forEach { init ->
                         MapRow(left = init, right = m.sheng[init].orEmpty()) { ui.setSheng(init, it) }
                     }
-                    1 -> items(SettingsUiState.FINALS) { fin ->
+                    1 -> SettingsUiState.FINALS.forEach { fin ->
                         MapRow(left = fin, right = m.yun[fin].orEmpty()) { ui.setYun(fin, it) }
                     }
-                    else -> items(SettingsUiState.ZERO_SYLS) { syl ->
+                    else -> SettingsUiState.ZERO_SYLS.forEach { syl ->
                         val code = m.yinjie.firstOrNull { it.first == syl }?.second.orEmpty()
                         MapRow(left = syl, right = code) { ui.setYinjie(syl, it) }
                     }
                 }
             }
         }
+    }
+}
+
+/** 分段标签：普通小矩形，选中时加深底色；非按钮样式。 */
+@Composable
+private fun SectionTab(text: String, selected: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(topStart = 6.dp, topEnd = 6.dp))
+            .background(
+                if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 6.dp),
+    ) {
+        Text(
+            text,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (selected) MaterialTheme.colorScheme.onSurface
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -535,7 +572,7 @@ private fun ZeroInitialRow(ui: SettingsUiState, m: SettingsUiState.SchemeModel) 
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Checkbox(checked = m.ziPriority, onCheckedChange = { ui.setZiPriority(it) })
-            Text("优先于 [yinjie] 音节栏", style = MaterialTheme.typography.bodySmall)
+            Text("高优先级", style = MaterialTheme.typography.bodySmall)
         }
     }
 }
@@ -656,35 +693,35 @@ private fun SchemeDialog(draft: SettingsUiState.Draft, ui: SettingsUiState, onIm
 
 @Composable
 private fun IniDialog(ini: String, ui: SettingsUiState, onDismiss: () -> Unit) {
+    var name by remember { mutableStateOf(ui.selected) }
     var text by remember { mutableStateOf(ini) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("编辑 ini（已包含导入时的补全）") },
+        title = { Text("编辑方案") },
         text = {
-            OutlinedTextField(
-                value = text,
-                onValueChange = { text = it },
-                textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                minLines = 12,
-                maxLines = 18,
-                modifier = Modifier.fillMaxWidth(),
-            )
+            Column(
+                modifier = Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    singleLine = true,
+                    label = { Text("方案名") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    label = { Text("码表内容") },
+                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    minLines = 12,
+                    maxLines = 18,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
         },
-        confirmButton = { TextButton(onClick = { ui.saveIni(text) }) { Text("保存") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
-    )
-}
-
-@Composable
-private fun RenameDialog(old: String, ui: SettingsUiState, onDismiss: () -> Unit) {
-    var name by remember { mutableStateOf(old) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("重命名") },
-        text = {
-            OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true, label = { Text("新名称") }, modifier = Modifier.fillMaxWidth())
-        },
-        confirmButton = { TextButton(onClick = { ui.renameTo(name) }) { Text("确定") } },
+        confirmButton = { TextButton(onClick = { ui.saveIni(name, text) }) { Text("保存") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
 }
