@@ -1,5 +1,6 @@
 package lpt.imehook
 
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -12,13 +13,20 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Done
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -30,11 +38,12 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -50,9 +59,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 
@@ -67,13 +78,29 @@ private val SLOT_LABELS = listOf(
     "槽 7 · 紫光双拼（推断，不保证）",
 )
 
+/** 导入弹窗里的内容示例。 */
+private const val EXAMPLE_INI = """[sheng]
+zh=v
+ch=i
+sh=u
+
+[yun]
+a=a
+ai=l
+an=j
+ang=h
+
+[yinjie]
+a=aa
+ai=al"""
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(ui: SettingsUiState, onImport: () -> Unit, onExport: () -> Unit) {
     Scaffold(
         topBar = {
             CenterAlignedTopAppBar(
-                title = { Text("双拼方案扩展", fontWeight = FontWeight.SemiBold) },
+                title = { Text("双拼扩展", fontWeight = FontWeight.SemiBold) },
                 actions = { RestartMenu(ui) },
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surface,
@@ -95,28 +122,29 @@ fun SettingsScreen(ui: SettingsUiState, onImport: () -> Unit, onExport: () -> Un
                 )
             }
             when (ui.tab) {
-                0 -> Tab1(ui, onImport)
+                0 -> Tab1(ui)
                 else -> Tab2(ui, onImport, onExport)
             }
         }
     }
 
-    ui.editing?.let { draft -> SchemeDialog(draft, ui) { ui.dismissDialog() } }
-    ui.renaming?.let { old -> RenameDialog(old, ui) { ui.dismissDialog() } }
+    ui.editing?.let { draft -> SchemeDialog(draft, ui, onImport) { ui.dismissDialog() } }
+    ui.iniEditing?.let { ini -> IniDialog(ini, ui) { ui.dismissDialog() } }
+    ui.renaming?.let { name -> RenameDialog(name, ui) { ui.dismissDialog() } }
     ui.deleting?.let { name -> DeleteDialog(name, ui) { ui.dismissDialog() } }
     ui.patches?.takeIf { it.isNotEmpty() }?.let { list ->
         PatchesDialog(list) { ui.dismissDialog() }
     }
 }
 
-// ---------------- 顶栏重启菜单 ----------------
+// ---------------- 顶栏重启 ----------------
 
 @Composable
 private fun RestartMenu(ui: SettingsUiState) {
     var expanded by remember { mutableStateOf(false) }
     Box {
         IconButton(onClick = { expanded = true }) {
-            Text("重启", fontWeight = FontWeight.Medium)
+            Icon(Icons.Filled.Refresh, contentDescription = "重启豆包输入法")
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             DropdownMenuItem(
@@ -133,7 +161,7 @@ private fun RestartMenu(ui: SettingsUiState) {
 // ---------------- Tab1：设置 ----------------
 
 @Composable
-private fun Tab1(ui: SettingsUiState, onImport: () -> Unit) {
+private fun Tab1(ui: SettingsUiState) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -142,7 +170,7 @@ private fun Tab1(ui: SettingsUiState, onImport: () -> Unit) {
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         ModeCard(ui)
-        SchemePickerCard(ui, onImport)
+        SchemePickerCard(ui)
         SlotCard(ui)
         TestCard(ui)
         ActionBar(ui)
@@ -190,12 +218,12 @@ private fun ModeRow(selected: Boolean, title: String, desc: String, onClick: () 
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SchemePickerCard(ui: SettingsUiState, onImport: () -> Unit) {
+private fun SchemePickerCard(ui: SettingsUiState) {
     var expanded by remember { mutableStateOf(false) }
     SectionCard("当前方案") {
         if (ui.schemes.isEmpty()) {
             Text(
-                "还没有方案，去「管理自定义双拼」新建或导入。",
+                "还没有方案，去「管理自定义双拼」导入。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -364,118 +392,152 @@ private fun AboutCard() {
 @Composable
 private fun Tab2(ui: SettingsUiState, onImport: () -> Unit, onExport: () -> Unit) {
     Column(
-        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),
+        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        // 方案列表（紧凑行）
         SchemeListCard(ui, onImport, onExport)
-        // 零声母设置 + 编辑表（仅当选中有方案时）
-        ui.editModel?.let { m ->
-            ZeroInitialCard(ui, m)
-            EditTableCard(ui, m)
-            Button(onClick = ui::saveEditModel, modifier = Modifier.fillMaxWidth()) {
-                Text("保存 ${m.name}")
-            }
+        val m = ui.editModel
+        if (m == null) {
+            Text(
+                "先在上方选一个方案，这里会出现它的映射表。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            EditorCard(ui, m, Modifier.weight(1f))
         }
-        Spacer(Modifier.height(16.dp))
     }
 }
 
 @Composable
 private fun SchemeListCard(ui: SettingsUiState, onImport: () -> Unit, onExport: () -> Unit) {
-    SectionCard("方案列表") {
-        if (ui.schemes.isEmpty()) {
-            Text(
-                "还没有方案。可「导入」现成 ini，或「导出模板」后编辑再导入。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        } else {
-            ui.schemes.forEach { name ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { ui.select(name) }
-                        .padding(vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    RadioButton(selected = name == ui.selected, onClick = { ui.select(name) })
-                    Spacer(Modifier.width(8.dp))
-                    Text(name, style = MaterialTheme.typography.bodyLarge)
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            SectionTitle("方案")
+            if (ui.schemes.isEmpty()) {
+                Text(
+                    "还没有方案。点「导入」粘贴 ini 或从文件读取，也可先「模板导出」拿到模板。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                LazyColumn(modifier = Modifier.heightIn(max = 180.dp)) {
+                    items(ui.schemes) { name ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth().clickable { ui.select(name) },
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            RadioButton(selected = name == ui.selected, onClick = { ui.select(name) })
+                            Text(name, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                            IconButton(onClick = { ui.requestRename(name) }) {
+                                Icon(Icons.Filled.Edit, contentDescription = "重命名", modifier = Modifier.size(18.dp))
+                            }
+                            IconButton(onClick = { ui.requestDelete(name) }) {
+                                Icon(Icons.Filled.Delete, contentDescription = "删除", modifier = Modifier.size(18.dp))
+                            }
+                        }
+                    }
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = ui::newScheme, modifier = Modifier.weight(1f)) { Text("导入") }
+                OutlinedButton(onClick = onExport, modifier = Modifier.weight(1f)) { Text("模板导出") }
+            }
+        }
+    }
+}
+
+// ---------------- 方案编辑 ----------------
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun EditorCard(ui: SettingsUiState, m: SettingsUiState.SchemeModel, modifier: Modifier = Modifier) {
+    var section by remember(m.name) { mutableStateOf(0) }
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+    ) {
+        Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "方案编辑·${m.name}",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                )
+                IconButton(onClick = ui::openIniEditor) {
+                    Icon(Icons.Filled.Edit, contentDescription = "编辑 ini", modifier = Modifier.size(20.dp))
+                }
+                IconButton(onClick = ui::saveEditModel) {
+                    Icon(Icons.Filled.Done, contentDescription = "保存", modifier = Modifier.size(20.dp))
+                }
+            }
+
+            ZeroInitialRow(ui, m)
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(selected = section == 0, onClick = { section = 0 }, label = { Text("声母") })
+                FilterChip(selected = section == 1, onClick = { section = 1 }, label = { Text("韵母") })
+                FilterChip(selected = section == 2, onClick = { section = 2 }, label = { Text("音节") })
+            }
+
+            LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                when (section) {
+                    0 -> items(SettingsUiState.INITIALS) { init ->
+                        MapRow(left = init, right = m.sheng[init].orEmpty()) { ui.setSheng(init, it) }
+                    }
+                    1 -> items(SettingsUiState.FINALS) { fin ->
+                        MapRow(left = fin, right = m.yun[fin].orEmpty()) { ui.setYun(fin, it) }
+                    }
+                    else -> items(SettingsUiState.ZERO_SYLS) { syl ->
+                        val code = m.yinjie.firstOrNull { it.first == syl }?.second.orEmpty()
+                        MapRow(left = syl, right = code) { ui.setYinjie(syl, it) }
+                    }
                 }
             }
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = ui::newScheme, modifier = Modifier.weight(1f)) { Text("新建") }
-            OutlinedButton(onClick = onImport, modifier = Modifier.weight(1f)) { Text("导入") }
-            OutlinedButton(onClick = onExport, modifier = Modifier.weight(1f)) { Text("导出模板") }
-        }
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ZeroInitialCard(ui: SettingsUiState, m: SettingsUiState.SchemeModel) {
-    SectionCard("零声母方案（可改）") {
-        listOf(
-            SchemeParser.ZI_FIXED,
-            SchemeParser.ZI_FIRST_LETTER,
-            SchemeParser.ZI_FIRST_LETTER_FULL,
-            SchemeParser.ZI_OTHER,
-        ).forEach { mode ->
-            Row(
-                modifier = Modifier.fillMaxWidth().clickable { ui.setZiMode(mode) }.padding(vertical = 2.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                RadioButton(selected = m.ziMode == mode, onClick = { ui.setZiMode(mode) })
-                Spacer(Modifier.width(4.dp))
-                Text(SettingsUiState.ziModeLabel(mode), style = MaterialTheme.typography.bodyMedium)
+private fun ZeroInitialRow(ui: SettingsUiState, m: SettingsUiState.SchemeModel) {
+    var expanded by remember { mutableStateOf(false) }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("零声母", style = MaterialTheme.typography.bodySmall, modifier = Modifier.width(52.dp))
+            ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }) {
+                OutlinedTextField(
+                    value = SettingsUiState.ziModeLabel(m.ziMode),
+                    onValueChange = { },
+                    readOnly = true,
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodySmall,
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
+                    modifier = Modifier.weight(1f).menuAnchor(),
+                )
+                ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                    SettingsUiState.ZI_MODES.forEach { mode ->
+                        DropdownMenuItem(
+                            text = { Text(SettingsUiState.ziModeLabel(mode)) },
+                            onClick = { ui.setZiMode(mode); expanded = false },
+                        )
+                    }
+                }
             }
-        }
-        if (m.ziMode == SchemeParser.ZI_FIXED) {
-            OutlinedTextField(
-                value = m.ziKey,
-                onValueChange = { ui.setZiKey(it) },
-                singleLine = true,
-                label = { Text("固定键（单个字母）") },
-                modifier = Modifier.fillMaxWidth(),
-            )
+            if (m.ziMode == SchemeParser.ZI_FIXED) {
+                CompactField(m.ziKey, { ui.setZiKey(it) }, Modifier.width(72.dp))
+            }
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Checkbox(checked = m.ziPriority, onCheckedChange = { ui.setZiPriority(it) })
-            Text("此方案优先于 [yinjie] 音节栏", style = MaterialTheme.typography.bodySmall)
+            Text("优先于 [yinjie] 音节栏", style = MaterialTheme.typography.bodySmall)
         }
     }
-}
-
-@Composable
-private fun EditTableCard(ui: SettingsUiState, m: SettingsUiState.SchemeModel) {
-    SectionCard("映射表（左键不可改，右键可改）") {
-        LazyColumn(modifier = Modifier.heightIn(max = 360.dp)) {
-            item { SubHeader("声母") }
-            items(SettingsUiState.INITIALS) { init ->
-                MapRow(left = init, right = m.sheng[init].orEmpty()) { ui.setSheng(init, it) }
-            }
-            item { SubHeader("韵母") }
-            items(SettingsUiState.FINALS) { fin ->
-                MapRow(left = fin, right = m.yun[fin].orEmpty()) { ui.setYun(fin, it) }
-            }
-            item { SubHeader("零声音节") }
-            items(SettingsUiState.ZERO_SYLS) { syl ->
-                val code = m.yinjie.firstOrNull { it.first == syl }?.second.orEmpty()
-                MapRow(left = syl, right = code) { ui.setYinjie(syl, it) }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SubHeader(text: String) {
-    Text(
-        text,
-        style = MaterialTheme.typography.labelMedium,
-        color = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
-    )
 }
 
 @Composable
@@ -488,17 +550,37 @@ private fun MapRow(left: String, right: String, onValue: (String) -> Unit) {
             left,
             style = MaterialTheme.typography.bodySmall,
             fontFamily = FontFamily.Monospace,
-            modifier = Modifier.width(72.dp),
+            modifier = Modifier.width(64.dp),
         )
         Spacer(Modifier.width(8.dp))
-        OutlinedTextField(
-            value = right,
-            onValueChange = onValue,
+        CompactField(right, onValue, Modifier.weight(1f))
+    }
+}
+
+/** 紧凑输入格：BasicTextField + 细边框，比 OutlinedTextField 矮一半。 */
+@Composable
+private fun CompactField(value: String, onValueChange: (String) -> Unit, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .height(30.dp)
+            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.55f), RoundedCornerShape(6.dp))
+            .padding(horizontal = 8.dp),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        BasicTextField(
+            value = value,
+            onValueChange = onValueChange,
             singleLine = true,
-            textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
-            modifier = Modifier.weight(1f),
-            colors = OutlinedTextFieldDefaults.colors(),
+            textStyle = MaterialTheme.typography.bodySmall.copy(
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurface,
+            ),
+            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+            keyboardOptions = KeyboardOptions(
+                capitalization = KeyboardCapitalization.None,
+                keyboardType = KeyboardType.Text,
+            ),
+            modifier = Modifier.fillMaxWidth(),
         )
     }
 }
@@ -526,16 +608,16 @@ private fun SectionTitle(text: String) {
 // ---------------- 弹窗 ----------------
 
 @Composable
-private fun SchemeDialog(draft: SettingsUiState.Draft, ui: SettingsUiState, onDismiss: () -> Unit) {
+private fun SchemeDialog(draft: SettingsUiState.Draft, ui: SettingsUiState, onImport: () -> Unit, onDismiss: () -> Unit) {
     var name by remember(draft) { mutableStateOf(draft.name) }
     var content by remember(draft) { mutableStateOf(draft.content) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (draft.original == null) "新建方案" else "编辑 ${draft.original}") },
+        title = { Text("导入方案") },
         text = {
             Column(
-                modifier = Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()),
+                modifier = Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 OutlinedTextField(
@@ -543,22 +625,52 @@ private fun SchemeDialog(draft: SettingsUiState.Draft, ui: SettingsUiState, onDi
                     onValueChange = { name = it },
                     singleLine = true,
                     label = { Text("方案名") },
-                    placeholder = { Text("例如 自然码") },
                     modifier = Modifier.fillMaxWidth(),
                 )
                 OutlinedTextField(
                     value = content,
                     onValueChange = { content = it },
                     label = { Text("码表内容（sp26.ini 格式）") },
-                    placeholder = { Text("[sheng]\nzh=v\n\n[yun]\nai=l\n\n[yinjie]\na=aa") },
+                    placeholder = {
+                        Text(EXAMPLE_INI, style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace))
+                    },
                     textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                    minLines = 8,
-                    maxLines = 14,
+                    minLines = 10,
+                    maxLines = 16,
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
         },
-        confirmButton = { TextButton(onClick = { ui.saveDraft(SettingsUiState.Draft(name, content, draft.original)) }) { Text("保存") } },
+        confirmButton = {
+            TextButton(onClick = { ui.saveDraft(SettingsUiState.Draft(name, content, draft.original)) }) { Text("导入") }
+        },
+        // 左下角：从文件读取（原来的导入键）
+        dismissButton = {
+            Row {
+                TextButton(onClick = onImport) { Text("从文件导入") }
+                TextButton(onClick = onDismiss) { Text("取消") }
+            }
+        },
+    )
+}
+
+@Composable
+private fun IniDialog(ini: String, ui: SettingsUiState, onDismiss: () -> Unit) {
+    var text by remember { mutableStateOf(ini) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("编辑 ini（已包含导入时的补全）") },
+        text = {
+            OutlinedTextField(
+                value = text,
+                onValueChange = { text = it },
+                textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                minLines = 12,
+                maxLines = 18,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        },
+        confirmButton = { TextButton(onClick = { ui.saveIni(text) }) { Text("保存") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
 }

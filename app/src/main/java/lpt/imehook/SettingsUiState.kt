@@ -46,6 +46,8 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
         private set
     var patches by mutableStateOf<List<String>?>(null)
         private set
+    var iniEditing by mutableStateOf<String?>(null)
+        private set
 
     /** Tab2 中正在编辑的方案结构表。 */
     var editModel by mutableStateOf<SchemeModel?>(null)
@@ -141,7 +143,17 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
 
     // ---------------- 方案库 ----------------
 
-    fun newScheme() { editing = Draft("", "", null) }
+    fun newScheme() { editing = Draft(defaultSchemeName(), "", null) }
+
+    /** 自定义方案N：取 N 的最小排除值。 */
+    fun defaultSchemeName(): String {
+        val used = store.names().mapNotNull { name ->
+            Regex("^自定义方案(\\d+)$").find(name)?.groupValues?.get(1)?.toIntOrNull()
+        }.toSet()
+        var i = 1
+        while (used.contains(i)) i++
+        return "自定义方案$i"
+    }
 
     fun editSelected() {
         if (selected.isEmpty()) { toast("先选择一个方案"); return }
@@ -149,17 +161,41 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
         loadEditModel()
     }
 
-    fun requestRename() {
-        if (selected.isEmpty()) { toast("先选择一个方案"); return }
-        renaming = selected
+    fun requestRename(name: String? = null) {
+        val target = name ?: selected
+        if (target.isEmpty()) { toast("先选择一个方案"); return }
+        renaming = target
     }
 
-    fun requestDelete() {
-        if (selected.isEmpty()) { toast("先选择一个方案"); return }
-        deleting = selected
+    fun requestDelete(name: String? = null) {
+        val target = name ?: selected
+        if (target.isEmpty()) { toast("先选择一个方案"); return }
+        deleting = target
     }
 
-    fun dismissDialog() { editing = null; renaming = null; deleting = null; patches = null }
+    fun dismissDialog() { editing = null; renaming = null; deleting = null; patches = null; iniEditing = null }
+
+    /** 打开 ini 编辑：内容为 app 处理过（补全后）的那份。 */
+    fun openIniEditor() {
+        if (selected.isEmpty()) { toast("先选择一个方案"); return }
+        iniEditing = store.iniOf(selected) ?: ""
+    }
+
+    fun saveIni(text: String) {
+        val name = selected
+        if (name.isEmpty()) { toast("先选择一个方案"); return }
+        val pr = try { SchemeParser.parseWithPatches(text) }
+        catch (e: IllegalArgumentException) { toast("解析失败：" + e.message); return }
+        if (pr.scheme.table.isEmpty()) { toast("解析结果为空表"); return }
+        store.put(name, pr.ini, pr.scheme.normalizedJson(),
+            store.zeroInitialMode(name), store.zeroInitialKey(name), store.zeroInitialPriority(name))
+        iniEditing = null
+        loadEditModel()
+        reloadScheme()
+        runTest()
+        updateStatus()
+        if (pr.patches.isNotEmpty()) patches = pr.patches else toast("已保存：$name")
+    }
 
     fun saveDraft(draft: Draft) {
         val name = draft.name.trim()
@@ -169,7 +205,7 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
         catch (e: IllegalArgumentException) { toast("解析失败：" + e.message); return }
         if (pr.scheme.table.isEmpty()) { toast("解析结果为空表"); return }
         if (draft.original != null && draft.original != name) store.rename(draft.original, name)
-        store.put(name, draft.content, pr.scheme.normalizedJson(),
+        store.put(name, pr.ini, pr.scheme.normalizedJson(),
             pr.guess.mode, pr.guess.key, false)
         store.setActive(name)
         selected = name
@@ -203,14 +239,7 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
             ctx.contentResolver.openInputStream(uri)?.use { it.bufferedReader().readText() }.orEmpty()
         } catch (e: Exception) { toast("读取失败：" + e.message); return }
         if (text.isBlank()) { toast("文件为空"); return }
-        editing = Draft(deriveName(uri), text, null)
-    }
-
-    private fun deriveName(uri: Uri): String {
-        var name = uri.lastPathSegment ?: return "导入方案"
-        name = name.substringAfterLast('/')
-        if (name.lastIndexOf('.') > 0) name = name.substring(0, name.lastIndexOf('.'))
-        return name.ifBlank { "导入方案" }
+        editing = Draft(defaultSchemeName(), text, null)
     }
 
     // ---------------- 导出模板 ----------------
@@ -410,8 +439,15 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
             SchemeParser.ZI_FIXED -> "指定固定键"
             SchemeParser.ZI_FIRST_LETTER -> "纯韵母首字母"
             SchemeParser.ZI_FIRST_LETTER_FULL -> "纯韵母首字母（双字母全拼）"
-            else -> "其它"
+            else -> "未选定"
         }
+
+        /** 可选的三项（未选定不是选项，只是未识别出的状态）。 */
+        val ZI_MODES = listOf(
+            SchemeParser.ZI_FIXED,
+            SchemeParser.ZI_FIRST_LETTER,
+            SchemeParser.ZI_FIRST_LETTER_FULL,
+        )
 
         fun Guess.toLabel(): String =
             ziModeLabel(mode) + (if (mode == SchemeParser.ZI_FIXED && key.isNotEmpty()) " · 键 $key" else "")

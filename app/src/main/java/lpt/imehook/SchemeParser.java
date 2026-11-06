@@ -57,10 +57,13 @@ public final class SchemeParser {
         public final Scheme scheme;
         public final List<String> patches;
         public final Guess guess;
-        public ParseResult(Scheme scheme, List<String> patches, Guess guess) {
+        /** 补全后的 ini 文本：存进 app 的就是这一份，也是「编辑 ini」里展示的内容。 */
+        public final String ini;
+        public ParseResult(Scheme scheme, List<String> patches, Guess guess, String ini) {
             this.scheme = scheme;
             this.patches = patches;
             this.guess = guess;
+            this.ini = ini;
         }
     }
 
@@ -248,7 +251,19 @@ public final class SchemeParser {
         s.flat = flat.toString();
 
         Guess guess = guessZeroInitial(zeroKeyFromTilde, yinjie, yun);
-        return new ParseResult(s, patches, guess);
+        return new ParseResult(s, patches, guess, buildIni(sheng, yun, yinjie));
+    }
+
+    /** 把补全后的三张表拼回 ini 文本（补全项会出现在里面）。 */
+    private static String buildIni(Map<String, String> sheng, Map<String, String> yun, List<String[]> yinjie) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("[sheng]\n");
+        for (Map.Entry<String, String> e : sheng.entrySet()) sb.append(e.getKey()).append('=').append(e.getValue()).append('\n');
+        sb.append("\n[yun]\n");
+        for (Map.Entry<String, String> e : yun.entrySet()) sb.append(e.getKey()).append('=').append(e.getValue()).append('\n');
+        sb.append("\n[yinjie]\n");
+        for (String[] e : yinjie) sb.append(e[0]).append('=').append(e[1]).append('\n');
+        return sb.toString();
     }
 
     /** 猜测零声母方案。优先用 ~ 声明；其次从音节栏的首键规律推断。 */
