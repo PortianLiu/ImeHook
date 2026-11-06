@@ -29,6 +29,8 @@ public final class ModuleConfig {
     public static final Uri CONFIG_URI = Uri.parse("content://" + AUTHORITY + "/config");
     public static final Uri TARGETS_URI = Uri.parse("content://" + AUTHORITY + "/targets");
     public static final Uri APK_URI = Uri.parse("content://" + AUTHORITY + "/apk");
+    /** 目标进程把日志行推到模块 App 落盘的通道（call("appendLog")）。 */
+    public static final Uri LOG_URI = Uri.parse("content://" + AUTHORITY + "/log");
     public static final String FILE_NAME = "config.txt";
     public static final String TARGETS_FILE_NAME = "targets.txt";
 
@@ -49,6 +51,8 @@ public final class ModuleConfig {
      * （自杀不需要 root，也不依赖 su）。
      */
     public String exit = "";
+    /** 详细诊断日志：默认关闭，用户在设置页手动开启后才记录按键级事件。 */
+    public boolean diag = false;
 
     private ModuleConfig() {
     }
@@ -151,6 +155,7 @@ public final class ModuleConfig {
         StringBuilder sb = new StringBuilder();
         sb.append("mode=").append(mode).append('\n');
         sb.append("slot=").append(slot).append('\n');
+        sb.append("diag=").append(diag ? 1 : 0).append('\n');
         sb.append("exit=").append(exit).append('\n');
         sb.append(HEADER_TABLE).append('\n');
         sb.append(table);
@@ -176,6 +181,9 @@ public final class ModuleConfig {
                     break;
                 case "slot":
                     slot = parseInt(v, slot);
+                    break;
+                case "diag":
+                    diag = parseInt(v, 0) == 1;
                     break;
                 case "exit":
                     exit = v;

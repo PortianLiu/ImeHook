@@ -31,4 +31,18 @@ public final class NativeBridge {
      * @param targets 每行 versionCode=offset:signature（32 hex 字符），空字符串表示回落内置兜底表
      */
     public static native void nativeSetTargets(String targets);
+
+    /**
+     * 详细日志开关。关闭时热路径只判断一个原子标志，开销可忽略。
+     */
+    public static native void nativeSetDiag(boolean on);
+
+    /**
+     * 取走并清空详细日志缓冲。每行一条：
+     * t=事件时刻(单调 ns) d=本次耗时(ns) m=模式 s=槽位 k=按键 r=候选数 x=结果类型(0直通 1槽位 2命中 3回退)。
+     */
+    public static native String nativeDrainDiag();
+
+    /** 常驻计数快照：installed/unsupported/converts/custom/fallback。 */
+    public static native String nativeStats();
 }

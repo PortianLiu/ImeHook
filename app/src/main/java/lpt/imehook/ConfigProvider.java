@@ -6,6 +6,7 @@ import android.content.Context;
 import android.database.Cursor;
 import android.database.MatrixCursor;
 import android.net.Uri;
+import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
 
 import java.io.File;
@@ -52,6 +53,19 @@ public final class ConfigProvider extends ContentProvider {
     @Override
     public String getType(Uri uri) {
         return "text/plain";
+    }
+
+    /**
+     * 目标进程推日志用（call("appendLog")）：日志只在模块私有目录落盘，
+     * 目标进程写不了别的 uid 的文件，因此由这里代写。
+     */
+    @Override
+    public Bundle call(String method, String arg, Bundle extras) {
+        if ("appendLog".equals(method) && extras != null) {
+            Context ctx = getContext();
+            if (ctx != null) LogSink.append(ctx, extras.getString("lines"));
+        }
+        return null;
     }
 
     @Override

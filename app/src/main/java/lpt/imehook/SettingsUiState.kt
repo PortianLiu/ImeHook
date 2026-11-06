@@ -21,6 +21,9 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
         private set
     var slot by mutableStateOf(saved.slot)
         private set
+    /** 详细诊断日志开关（按键级记录），默认关闭。 */
+    var diag by mutableStateOf(saved.diag)
+        private set
 
     var schemes by mutableStateOf(store.names())
         private set
@@ -384,6 +387,23 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
             am.killBackgroundProcesses(TARGET_PKG)
         } catch (ignored: Throwable) {}
         toast("已请求豆包输入法退出，再次点击输入框即重新加载")
+    }
+
+    // ---------------- 诊断日志 ----------------
+
+    fun chooseDiag(on: Boolean) {
+        val cfg = ModuleConfig.load(ctx)
+        cfg.diag = on
+        cfg.publish(ctx)
+        diag = on
+        toast(if (on) "已开启详细日志，目标进程 1 秒内生效" else "已关闭详细日志")
+    }
+
+    fun logText(): String = LogSink.tail(ctx, 200 * 1024)
+
+    fun clearLog() {
+        LogSink.clear(ctx)
+        toast("已清空本机日志")
     }
 
     // ---------------- 状态文字 ----------------

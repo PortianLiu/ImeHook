@@ -46,6 +46,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
@@ -99,7 +100,12 @@ ai=al"""
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(ui: SettingsUiState, onImport: () -> Unit, onExport: () -> Unit) {
+fun SettingsScreen(
+    ui: SettingsUiState,
+    onImport: () -> Unit,
+    onExport: () -> Unit,
+    onExportLog: () -> Unit,
+) {
     Scaffold(
         topBar = {
             CenterAlignedTopAppBar(
@@ -125,7 +131,7 @@ fun SettingsScreen(ui: SettingsUiState, onImport: () -> Unit, onExport: () -> Un
                 )
             }
             when (ui.tab) {
-                0 -> Tab1(ui)
+                0 -> Tab1(ui, onExportLog)
                 else -> Tab2(ui, onImport, onExport)
             }
         }
@@ -163,7 +169,7 @@ private fun RestartMenu(ui: SettingsUiState) {
 // ---------------- Tab1：设置 ----------------
 
 @Composable
-private fun Tab1(ui: SettingsUiState) {
+private fun Tab1(ui: SettingsUiState, onExportLog: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -177,6 +183,7 @@ private fun Tab1(ui: SettingsUiState) {
         TestCard(ui)
         ActionBar(ui)
         StatusCard(ui)
+        DiagCard(ui, onExportLog)
         AboutCard()
         Spacer(Modifier.height(16.dp))
     }
@@ -365,6 +372,57 @@ private fun StatusCard(ui: SettingsUiState) {
                 fontFamily = FontFamily.Monospace,
             )
         }
+    }
+}
+
+@Composable
+private fun DiagCard(ui: SettingsUiState, onExportLog: () -> Unit) {
+    var showLog by remember { mutableStateOf(false) }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    SectionTitle("诊断日志")
+                    Text(
+                        "常驻部分只统计调用/命中次数和异常，开销可以忽略；详细日志会记录每次按键的键位、候选数与耗时，" +
+                            "默认关闭，且只保存在本机。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(checked = ui.diag, onCheckedChange = { ui.chooseDiag(it) })
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { showLog = true }) { Text("查看") }
+                OutlinedButton(onClick = onExportLog) { Text("导出") }
+                TextButton(onClick = { ui.clearLog() }) { Text("清空") }
+            }
+        }
+    }
+    if (showLog) {
+        val text = remember { ui.logText() }
+        AlertDialog(
+            onDismissRequest = { showLog = false },
+            confirmButton = { TextButton(onClick = { showLog = false }) { Text("关闭") } },
+            title = { Text("诊断日志") },
+            text = {
+                if (text.isEmpty()) {
+                    Text("暂无日志（目标进程启动或开关生效后才会写入）", style = MaterialTheme.typography.bodySmall)
+                } else {
+                    Text(
+                        text,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier
+                            .heightIn(max = 360.dp)
+                            .verticalScroll(rememberScrollState()),
+                    )
+                }
+            },
+        )
     }
 }
 

@@ -32,6 +32,18 @@ class SettingsActivity : ComponentActivity() {
             }
         }
 
+    private val createLogDoc =
+        registerForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+            if (uri == null) return@registerForActivityResult
+            try {
+                contentResolver.openOutputStream(uri)?.use { out ->
+                    out.write(ui.logText().toByteArray())
+                }
+            } catch (e: Exception) {
+                android.widget.Toast.makeText(this, "导出失败：${e.message}", android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -50,6 +62,7 @@ class SettingsActivity : ComponentActivity() {
                     ui,
                     onImport = { openDoc.launch(arrayOf("*/*")) },
                     onExport = { createDoc.launch(ui.exportTemplateName()) },
+                    onExportLog = { createLogDoc.launch("imehook-log.txt") },
                 )
             }
         }
