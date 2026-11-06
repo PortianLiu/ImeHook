@@ -27,8 +27,10 @@ public final class ModuleConfig {
 
     public static final String AUTHORITY = "lpt.imehook.config";
     public static final Uri CONFIG_URI = Uri.parse("content://" + AUTHORITY + "/config");
+    public static final Uri TARGETS_URI = Uri.parse("content://" + AUTHORITY + "/targets");
     public static final Uri APK_URI = Uri.parse("content://" + AUTHORITY + "/apk");
     public static final String FILE_NAME = "config.txt";
+    public static final String TARGETS_FILE_NAME = "targets.txt";
 
     /** 关闭，完全原生行为 */
     public static final int MODE_OFF = 0;
@@ -81,6 +83,30 @@ public final class ModuleConfig {
         return loadFromHookSide(ctx);
     }
 
+    /** 目标进程侧：从模块的 ContentProvider 读取偏移表；失败时返回空串（native 回落内置兜底表）。 */
+    public static String loadTargets(Context ctx) {
+        InputStream in = null;
+        try {
+            in = ctx.getContentResolver().openInputStream(TARGETS_URI);
+            if (in == null) return "";
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            byte[] buf = new byte[4096];
+            int n;
+            while ((n = in.read(buf)) > 0) bos.write(buf, 0, n);
+            return bos.toString("UTF-8");
+        } catch (Throwable t) {
+            Log.w("ImeHook", "read targets via provider failed: " + t);
+            return "";
+        } finally {
+            if (in != null) {
+                try {
+                    in.close();
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+    }
+
     /**
      * 模块 APK 路径。目标进程受包可见性限制，PackageManager 查不到 lpt.imehook，
      * 因此由 Provider（运行在模块进程里）直接自报 sourceDir。
@@ -115,6 +141,10 @@ public final class ModuleConfig {
 
     static File configFile(Context ctx) {
         return new File(ctx.getFilesDir(), FILE_NAME);
+    }
+
+    static File targetsFile(Context ctx) {
+        return new File(ctx.getFilesDir(), TARGETS_FILE_NAME);
     }
 
     private String serialize() {
@@ -179,9 +209,10 @@ public final class ModuleConfig {
         return -1;
     }
 
-    /** 供 Provider 返回版本号（文件修改时间）。 */
+    /** 供 Provider 返回版本号（配置与偏移表任一文件的修改时间，取较大者）。 */
     static long versionOf(Context ctx) {
-        File f = configFile(ctx);
-        return f.exists() ? f.lastModified() : 0L;
+        long cfg = configFile(ctx).lastModified();
+        long tgt = targetsFile(ctx).lastModified();
+        return Math.max(cfg, tgt);
     }
 }

@@ -24,4 +24,11 @@ public final class NativeBridge {
      * @param targetVersionCode 目标 App 的 versionCode，用于查偏移表
      */
     public static native boolean nativeTryInstall(long targetVersionCode);
+
+    /**
+     * 下发版本→偏移表。进程启动时从存储读入一次后常驻 native 内存。
+     *
+     * @param targets 每行 versionCode=offset:signature（32 hex 字符），空字符串表示回落内置兜底表
+     */
+    public static native void nativeSetTargets(String targets);
 }

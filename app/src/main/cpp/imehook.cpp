@@ -141,13 +141,19 @@ struct TargetInfo {
     uint8_t sig[16];      // 函数序言前 16 字节
 };
 
-static const TargetInfo kTargets[] = {
+// 内置兜底表：targets.txt 缺失/为空/解析失败时使用。
+// 正常情况下由 Java 侧从存储读入偏移表并通过 nativeSetTargets 下发。
+static const TargetInfo kBuiltinTargets[] = {
         // 豆包输入法 1.5.4
         {100504010L, 0x59953Cu,
          {0xff, 0x43, 0x03, 0xd1, 0xfd, 0x7b, 0x07, 0xa9,
           0xfc, 0x6f, 0x08, 0xa9, 0xfa, 0x67, 0x09, 0xa9}},
         // 1.5.3：未收录，由特征码扫描兜底
 };
+
+// 运行时偏移表：由 nativeSetTargets 从存储下发，进程启动读入一次后常驻内存。
+static std::vector<TargetInfo> g_targets;
+static std::mutex g_targetsMutex;
 
 // ---- 特征码：函数体内「方案槽选表」的指令骨架（与 tools/verify_sig.py 同步）----
 // 1.5.4 @0x599648（函数头 +0x10C）：
@@ -255,9 +261,25 @@ static bool tryInstall(long versionCode) {
     if (g_base == 0) return false;  // libshell.so 尚未加载，等重试
 
     // 路径 1：版本表 + 序言签名校验
+    // 优先用存储下发的偏移表；为空则回落内置兜底表。
+    const TargetInfo* targets = nullptr;
+    size_t targetCount = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_targetsMutex);
+        if (!g_targets.empty()) {
+            targets = g_targets.data();
+            targetCount = g_targets.size();
+        }
+    }
+    if (targets == nullptr) {
+        targets = kBuiltinTargets;
+        targetCount = sizeof(kBuiltinTargets) / sizeof(kBuiltinTargets[0]);
+    }
+
     void* addr = nullptr;
     const char* how = "";
-    for (const auto& k : kTargets) {
+    for (size_t i = 0; i < targetCount; i++) {
+        const auto& k = targets[i];
         if (k.versionCode != versionCode) continue;
         void* a = reinterpret_cast<void*>(g_base + k.offset);
         if (std::memcmp(a, k.sig, sizeof(k.sig)) == 0) {
@@ -327,6 +349,69 @@ static void parseTable(const std::string& all, Table& out) {
     }
 }
 
+// ---------- 偏移表解析 ----------
+// 格式：每行 versionCode=offset:signature（32 个十六进制字符 = 16 字节）
+//   例：100504010=0x59953C:ff4303d1fd7b07a9fc6f08a9fa6709a9
+// 空行与 # 开头的行忽略。offset 支持 0x 前缀或纯十六进制。
+static int hexVal(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static bool parseHexByte(const char*& p, uint8_t& out) {
+    int hi = hexVal(p[0]);
+    int lo = hexVal(p[1]);
+    if (hi < 0 || lo < 0) return false;
+    out = static_cast<uint8_t>((hi << 4) | lo);
+    p += 2;
+    return true;
+}
+
+static void parseTargets(const std::string& all, std::vector<TargetInfo>& out) {
+    size_t pos = 0;
+    while (pos < all.size()) {
+        size_t nl = all.find('\n', pos);
+        std::string line = all.substr(pos, nl == std::string::npos ? nl : nl - pos);
+        pos = nl == std::string::npos ? all.size() : nl + 1;
+
+        line = trim(line);
+        if (line.empty() || line[0] == '#') continue;
+
+        size_t eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        std::string vcStr = trim(line.substr(0, eq));
+        std::string rest = trim(line.substr(eq + 1));
+
+        size_t colon = rest.find(':');
+        if (colon == std::string::npos) continue;
+        std::string offStr = trim(rest.substr(0, colon));
+        std::string sigStr = trim(rest.substr(colon + 1));
+        if (sigStr.size() != 32) continue;
+
+        TargetInfo t{};
+        try {
+            t.versionCode = std::stol(vcStr);
+        } catch (...) { continue; }
+
+        try {
+            std::string h = offStr;
+            if (h.size() > 2 && h[0] == '0' && (h[1] == 'x' || h[1] == 'X')) h = h.substr(2);
+            t.offset = static_cast<uint32_t>(std::stoul(h, nullptr, 16));
+        } catch (...) { continue; }
+
+        const char* p = sigStr.c_str();
+        bool ok = true;
+        for (int i = 0; i < 16; i++) {
+            if (!parseHexByte(p, t.sig[i])) { ok = false; break; }
+        }
+        if (!ok) continue;
+
+        out.push_back(t);
+    }
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_lpt_imehook_NativeBridge_nativeConfigure(JNIEnv* env, jclass,
                                               jint mode, jint slot, jstring table) {
@@ -348,4 +433,23 @@ Java_lpt_imehook_NativeBridge_nativeConfigure(JNIEnv* env, jclass,
 extern "C" JNIEXPORT jboolean JNICALL
 Java_lpt_imehook_NativeBridge_nativeTryInstall(JNIEnv*, jclass, jlong versionCode) {
     return tryInstall(versionCode) ? JNI_TRUE : JNI_FALSE;
+}
+
+// 下发偏移表。进程启动时从存储读入一次后常驻内存；后续用户手填/网络更新可再次调用覆盖。
+// 为空时 native 会自动回落内置兜底表，不会导致 hook 失败。
+extern "C" JNIEXPORT void JNICALL
+Java_lpt_imehook_NativeBridge_nativeSetTargets(JNIEnv* env, jclass, jstring targets) {
+    std::vector<TargetInfo> parsed;
+    if (targets != nullptr) {
+        const char* s = env->GetStringUTFChars(targets, nullptr);
+        if (s != nullptr) {
+            parseTargets(s, parsed);
+            env->ReleaseStringUTFChars(targets, s);
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_targetsMutex);
+        g_targets = std::move(parsed);
+    }
+    LOGI("setTargets: %zu entries loaded", g_targets.size());
 }

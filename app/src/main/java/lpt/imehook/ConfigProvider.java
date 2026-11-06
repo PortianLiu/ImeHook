@@ -25,7 +25,12 @@ public final class ConfigProvider extends ContentProvider {
 
     @Override
     public ParcelFileDescriptor openFile(Uri uri, String mode) throws FileNotFoundException {
-        File f = ModuleConfig.configFile(getContext());
+        File f;
+        if ("targets".equals(uri.getLastPathSegment())) {
+            f = ModuleConfig.targetsFile(getContext());
+        } else {
+            f = ModuleConfig.configFile(getContext());
+        }
         if (!f.exists()) throw new FileNotFoundException(f.getAbsolutePath());
         return ParcelFileDescriptor.open(f, ParcelFileDescriptor.MODE_READ_ONLY);
     }

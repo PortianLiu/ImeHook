@@ -58,6 +58,10 @@ public class HookEntry implements IXposedHookLoadPackage {
         }
 
         long vc = versionCodeOf(sCtx, TARGET);
+
+        // 先灌配置与偏移表（applyConfig 内部会调 nativeSetTargets），再尝试安装 hook
+        applyConfig(sCtx, true);
+
         boolean installed = false;
         if (sNativeLoaded) {
             try {
@@ -66,7 +70,6 @@ public class HookEntry implements IXposedHookLoadPackage {
                 XposedBridge.log("[ImeHook] install failed: " + t);
             }
         }
-        applyConfig(sCtx, true);
         XposedBridge.log("[ImeHook] versionCode=" + vc + " nativeLoaded=" + sNativeLoaded
                 + " installedNow=" + installed);
 
@@ -83,6 +86,12 @@ public class HookEntry implements IXposedHookLoadPackage {
                 NativeBridge.nativeConfigure(cfg.mode, cfg.slot, cfg.table);
             } catch (Throwable t) {
                 XposedBridge.log("[ImeHook] configure failed: " + t);
+            }
+            // 偏移表：启动时读入一次，配置/偏移表变化时同步更新；空则 native 回落内置兜底表
+            try {
+                NativeBridge.nativeSetTargets(ModuleConfig.loadTargets(ctx));
+            } catch (Throwable t) {
+                XposedBridge.log("[ImeHook] setTargets failed: " + t);
             }
         }
         XposedBridge.log("[ImeHook] configured: mode=" + cfg.mode + " slot=" + cfg.slot
