@@ -19,6 +19,7 @@ public final class NativeBridge {
 
     /**
      * 尝试在 libshell.so 上安装 hook。库未加载时返回 false，可稍后重试。
+     * 定位顺序：版本偏移表（已知版本快路径）→ 特征码扫描（未知版本兜底）。
      *
      * @param targetVersionCode 目标 App 的 versionCode，用于查偏移表
      */

@@ -130,7 +130,11 @@ static SpVec expandHook(void* scheme, const SpStr* key) {
     return g_orig(scheme, key);
 }
 
-// ---------- 版本偏移表 + 特征码校验 ----------
+// ---------- 定位策略 ----------
+// 路径 1（快）：版本表精确命中 + 序言签名校验，零扫描开销。
+// 路径 2（兜底）：特征码扫描 RX 段，应对未知版本/变体包；不依赖任何外部工具。
+// 两条都失败才判定不支持，拒绝 hook（宁可失效也不误钩）。
+
 struct TargetInfo {
     long versionCode;
     uint32_t offset;      // sub_59953C 的 vaddr
@@ -142,8 +146,79 @@ static const TargetInfo kTargets[] = {
         {100504010L, 0x59953Cu,
          {0xff, 0x43, 0x03, 0xd1, 0xfd, 0x7b, 0x07, 0xa9,
           0xfc, 0x6f, 0x08, 0xa9, 0xfa, 0x67, 0x09, 0xa9}},
-        // 1.5.3：sub_59953C 偏移待补（见 ANALYSIS §9）
+        // 1.5.3：未收录，由特征码扫描兜底
 };
+
+// ---- 特征码：函数体内「方案槽选表」的指令骨架（与 tools/verify_sig.py 同步）----
+// 1.5.4 @0x599648（函数头 +0x10C）：
+//   SUB  W8, W8, #1          ; CMP  W8, #6        ; B.HI <rel>
+//   SXTB X8, W8              ; ADRP X9, <page>    ; ADD X9, X9, #<off>
+//   LDR  X21, [X9,X8,LSL#3]  ; B    <rel>
+// 只通配地址/跳转偏移字段，寄存器分配全保留：版本变动导致失配时宁可拒绝 hook。
+static const uint8_t kSigPattern[] = {
+        0x08, 0x05, 0x00, 0x51, 0x1f, 0x19, 0x00, 0x71,
+        0x08, 0x00, 0x00, 0x54, 0x08, 0x1d, 0x40, 0x93,
+        0x09, 0x00, 0x00, 0x90, 0x29, 0x01, 0x00, 0x91,
+        0x35, 0x79, 0x68, 0xf8, 0x00, 0x00, 0x00, 0x14,
+};
+static const uint8_t kSigMask[] = {
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0x1f, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0x1f, 0x00, 0x00, 0x9f, 0xff, 0x03, 0x00, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0xfc,
+};
+constexpr size_t kSigLen = sizeof(kSigPattern);
+// 锚点距函数头的合理范围（1.5.4 实测 0x10C 与 0x1A0）
+constexpr size_t kFuncMaxBacktrack = 0x400;
+
+// 序言：SUB SP, SP, #imm（byte3=0xD1, Rn=Rd=SP → byte0=0xFF, byte1 低 2 位=11）
+static bool isSubSp(uint32_t w) { return (w & 0xFF0003FFu) == 0xD10003FFu; }
+// 紧跟 STP X29, X30, [SP, #imm]（byte3=0xA9, byte0=0xFD, byte1 低 3 位=011）
+static bool isStpFpLr(uint32_t w) { return (w & 0xFF0007FFu) == 0xA90003FDu; }
+
+static uintptr_t g_textStart = 0;
+static size_t g_textSize = 0;
+
+static uintptr_t findFuncStart(uintptr_t anchor) {
+    const uintptr_t lo = anchor - std::min<uintptr_t>(kFuncMaxBacktrack, anchor - g_textStart);
+    for (uintptr_t p = anchor - 4; p >= lo; p -= 4) {
+        uint32_t w0, w1;
+        std::memcpy(&w0, reinterpret_cast<const void*>(p), 4);
+        std::memcpy(&w1, reinterpret_cast<const void*>(p + 4), 4);
+        if (isSubSp(w0) && isStpFpLr(w1)) return p;
+    }
+    return 0;
+}
+
+// 该模式在同函数内有 EXACT/PREFIX 两处对称出现（1.5.4: 0x599648/0x5996dc），
+// 因此不要求唯一命中，而要求所有命中收敛到同一函数头；
+// 分叉即误命中，返回 0 拒绝。
+static uintptr_t scanForTarget() {
+    uint32_t firstWord;
+    std::memcpy(&firstWord, kSigPattern, 4);  // 首条指令精确匹配做预筛
+    const auto* text = reinterpret_cast<const uint8_t*>(g_textStart);
+    uintptr_t func = 0;
+    int hits = 0;
+    for (size_t i = 0; i + kSigLen <= g_textSize; i += 4) {
+        uint32_t cur;
+        std::memcpy(&cur, text + i, 4);
+        if (cur != firstWord) continue;
+        bool ok = true;
+        for (size_t j = 4; j < kSigLen; j++) {
+            if ((text[i + j] & kSigMask[j]) != kSigPattern[j]) { ok = false; break; }
+        }
+        if (!ok) continue;
+        hits++;
+        uintptr_t fs = findFuncStart(g_textStart + i);
+        if (fs == 0 || (func != 0 && func != fs)) {
+            LOGE("signature scan diverged (hit#%d anchor=0x%zx)", hits, g_textStart + i);
+            return 0;
+        }
+        func = fs;
+    }
+    LOGI("signature scan: hits=%d func=0x%zx", hits, func);
+    return func;
+}
 
 // ---------- 安装 ----------
 static uintptr_t g_base = 0;
@@ -151,6 +226,14 @@ static uintptr_t g_base = 0;
 static int phdrCb(struct dl_phdr_info* info, size_t, void*) {
     if (info->dlpi_name && std::strstr(info->dlpi_name, "libshell.so")) {
         g_base = static_cast<uintptr_t>(info->dlpi_addr);
+        for (int i = 0; i < info->dlpi_phnum; i++) {
+            const auto& ph = info->dlpi_phdr[i];
+            if (ph.p_type == PT_LOAD && (ph.p_flags & PF_X)) {
+                g_textStart = g_base + ph.p_vaddr;
+                g_textSize = ph.p_memsz;
+                break;
+            }
+        }
         return 1;
     }
     return 0;
@@ -166,22 +249,37 @@ static bool tryInstall(long versionCode) {
     if (g_installed.load()) return true;
 
     g_base = 0;
+    g_textStart = 0;
+    g_textSize = 0;
     dl_iterate_phdr(phdrCb, nullptr);
     if (g_base == 0) return false;  // libshell.so 尚未加载，等重试
 
-    const TargetInfo* t = nullptr;
+    // 路径 1：版本表 + 序言签名校验
+    void* addr = nullptr;
+    const char* how = "";
     for (const auto& k : kTargets) {
-        if (k.versionCode == versionCode) { t = &k; break; }
-    }
-    if (t == nullptr) {
-        LOGE("unsupported target versionCode=%ld", versionCode);
-        g_unsupported = true;  // 版本不对，重试无意义
-        return false;
+        if (k.versionCode != versionCode) continue;
+        void* a = reinterpret_cast<void*>(g_base + k.offset);
+        if (std::memcmp(a, k.sig, sizeof(k.sig)) == 0) {
+            addr = a;
+            how = "version-table";
+        } else {
+            LOGE("version %ld prologue sig mismatch, fall back to scan", versionCode);
+        }
+        break;
     }
 
-    void* addr = reinterpret_cast<void*>(g_base + t->offset);
-    if (std::memcmp(addr, t->sig, sizeof(t->sig)) != 0) {
-        LOGE("signature mismatch at %p, refuse to hook", addr);
+    // 路径 2：特征码扫描
+    if (addr == nullptr) {
+        uintptr_t f = scanForTarget();
+        if (f != 0) {
+            addr = reinterpret_cast<void*>(f);
+            how = "signature-scan";
+        }
+    }
+
+    if (addr == nullptr) {
+        LOGE("target not found (versionCode=%ld), unsupported", versionCode);
         g_unsupported = true;
         return false;
     }
@@ -189,9 +287,8 @@ static bool tryInstall(long versionCode) {
     DobbyHook(addr, reinterpret_cast<dobby_dummy_func_t>(&expandHook),
               reinterpret_cast<dobby_dummy_func_t*>(&g_orig));
     g_installed = g_orig != nullptr;
-    LOGI("hook %s at %p (base=0x%zx off=0x%x)",
-         g_installed.load() ? "installed" : "FAILED",
-         addr, g_base, t->offset);
+    LOGI("hook %s at %p (base=0x%zx by=%s)",
+         g_installed.load() ? "installed" : "FAILED", addr, g_base, how);
     return g_installed.load();
 }
 
