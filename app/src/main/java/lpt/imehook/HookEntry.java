@@ -132,6 +132,7 @@ public class HookEntry implements IXposedHookLoadPackage {
             }
             try {
                 NativeBridge.nativeSetDiag(cfg.diag);
+                NativeBridge.nativeSetDiagContent(cfg.diagContent);
             } catch (Throwable t) {
                 XposedBridge.log("[ImeHook] setDiag failed: " + t);
             }
@@ -139,10 +140,12 @@ public class HookEntry implements IXposedHookLoadPackage {
         sDiag = cfg.diag;
         XposedBridge.log("[ImeHook] configured: mode=" + cfg.mode + " slot=" + cfg.slot
                 + " tableLen=" + cfg.table.length() + " diag=" + cfg.diag
+                + " diagc=" + cfg.diagContent
                 + (first ? " (startup)" : " (reload)"));
         if (!first) {
             pushLog(ctx, "[baseline] config applied mode=" + cfg.mode + " slot=" + cfg.slot
-                    + " tableLen=" + cfg.table.length() + " diag=" + cfg.diag);
+                    + " tableLen=" + cfg.table.length() + " diag=" + cfg.diag
+                    + " diagc=" + cfg.diagContent);
         }
 
         String mark = cfg.exit;

@@ -24,6 +24,9 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
     /** 详细诊断日志开关（按键级记录），默认关闭。 */
     var diag by mutableStateOf(saved.diag)
         private set
+    /** 二级开关：详细日志开启时，额外记录展开结果的拼音内容。 */
+    var diagContent by mutableStateOf(saved.diagContent)
+        private set
 
     var schemes by mutableStateOf(store.names())
         private set
@@ -394,9 +397,20 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
     fun chooseDiag(on: Boolean) {
         val cfg = ModuleConfig.load(ctx)
         cfg.diag = on
+        if (!on) cfg.diagContent = false  // 总开关关闭时联动收起二级开关
         cfg.publish(ctx)
         diag = on
+        if (!on) diagContent = false
         toast(if (on) "已开启详细日志，目标进程 1 秒内生效" else "已关闭详细日志")
+    }
+
+    fun chooseDiagContent(on: Boolean) {
+        val cfg = ModuleConfig.load(ctx)
+        if (on && !cfg.diag) return  // 二级开关不能脱离详细日志单独开启
+        cfg.diagContent = on
+        cfg.publish(ctx)
+        diagContent = on
+        toast(if (on) "将记录展开的拼音内容，仅保存本机" else "已停止记录展开内容")
     }
 
     fun logText(): String = LogSink.tail(ctx, 200 * 1024)

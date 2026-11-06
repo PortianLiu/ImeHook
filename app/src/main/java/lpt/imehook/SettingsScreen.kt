@@ -395,6 +395,20 @@ private fun DiagCard(ui: SettingsUiState, onExportLog: () -> Unit) {
                 }
                 Switch(checked = ui.diag, onCheckedChange = { ui.chooseDiag(it) })
             }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "记录展开结果（拼音内容，用于排查特定音节失效）",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (ui.diag) MaterialTheme.colorScheme.onSurfaceVariant
+                    else MaterialTheme.colorScheme.outline,
+                    modifier = Modifier.weight(1f),
+                )
+                Switch(
+                    checked = ui.diagContent,
+                    onCheckedChange = { ui.chooseDiagContent(it) },
+                    enabled = ui.diag,
+                )
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = { showLog = true }) { Text("查看") }
                 OutlinedButton(onClick = onExportLog) { Text("导出") }

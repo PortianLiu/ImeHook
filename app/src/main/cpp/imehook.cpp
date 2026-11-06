@@ -1,6 +1,6 @@
 // libimehook：对豆包输入法 libshell.so 中 sub_59953C（双拼键位→候选拼音）的 inline hook。
 //
-// 目标函数（1.5.4，vaddr 0x59953C，逆向结论见 doubaoime/docs/ANALYSIS.md §6.5）：
+// 目标函数（1.5.4，vaddr 0x59953C，逆向结论见 doubaoime/docs/目标APK逆向分析.md §6.5）：
 //   x0 = scheme*        首字节 = 方案槽 id（1..7，2=自然码，6=小鹤）
 //   x1 = std::string*   键串（长度 1 或 2）
 //   x8 = sret           std::vector<std::string>*（24B 大返回值，调用方空间）
@@ -84,7 +84,7 @@ static std::atomic<int> g_slot{2};
 static std::shared_ptr<const Table> g_table = std::make_shared<const Table>();
 
 // ---------- hook ----------
-// 返回值 24B > 16B，编译器自动走 x8 sret，与原函数 ABI 一致（ANALYSIS §8.4 的陷阱）。
+// 返回值 24B > 16B，编译器自动走 x8 sret，与原函数 ABI 一致（目标APK逆向分析 §8.4 的陷阱）。
 using ExpandFn = SpVec (*)(void* scheme, const SpStr* key);
 static ExpandFn g_orig = nullptr;
 
@@ -93,10 +93,14 @@ static ExpandFn g_orig = nullptr;
 // 详细记录需用户在设置页手动开启；此时每次调用多两次 clock_gettime + 一次加锁写定长数组，
 // 仍不做 I/O、不拼字符串、不分配内存；落盘全部在后台线程完成。
 static std::atomic<bool> g_diag{false};
+// 二级开关：额外记录展开结果的拼音内容，仅在 g_diag 同时开启时生效。
+static std::atomic<bool> g_diagContent{false};
 
 static std::atomic<uint64_t> g_nConvert{0};
 static std::atomic<uint64_t> g_nCustomHit{0};
 static std::atomic<uint64_t> g_nFallback{0};
+
+constexpr size_t kValsCap = 96;  // 展开内容缓冲（逗号分隔的拼音候选，定长不分配）
 
 struct DiagEvent {
     uint64_t tNs;       // 事件时刻（单调时钟）
@@ -107,6 +111,8 @@ struct DiagEvent {
     uint8_t  slot;
     uint8_t  kind;      // 0 直通 1 槽位改写 2 自定义命中 3 回退原生
     uint8_t  results;   // 返回候选数
+    char     vals[kValsCap];  // 展开内容（二级开关开启时才有）
+    uint8_t  valsLen;
 };
 
 constexpr size_t kDiagCap = 512;
@@ -138,6 +144,24 @@ static void packKey(const SpStr* s, uint16_t& out, uint8_t& len) {
     len = static_cast<uint8_t>(n);
     if (n > 0) out |= static_cast<uint16_t>(r[1]);
     if (n > 1) out |= static_cast<uint16_t>(r[2]) << 8;
+}
+
+// 把展开结果的候选拼音拼成逗号分隔串抄入定长缓冲，只保留可打印 ASCII。
+// 本函数的候选均为拼音音节（非汉字），且在同一调用内抄出，无生命周期问题。
+static void packVals(const SpVec& v, char* out, uint8_t& outLen) {
+    size_t n = (v.e > v.b) ? static_cast<size_t>(v.e - v.b) : 0;
+    if (n > 8) n = 8;  // 最多抄 8 个候选
+    size_t w = 0;
+    for (size_t i = 0; i < n && w < kValsCap - 1; i++) {
+        std::string s = spToStr(v.b + i);
+        if (i > 0) out[w++] = ',';
+        for (char ch : s) {
+            if (w >= kValsCap - 1) break;
+            out[w++] = (ch >= 32 && ch < 127) ? ch : '?';
+        }
+    }
+    out[w] = 0;
+    outLen = static_cast<uint8_t>(w);
 }
 
 static SpVec expandHook(void* scheme, const SpStr* key) {
@@ -197,6 +221,8 @@ static SpVec expandHook(void* scheme, const SpStr* key) {
         e.kind = kind;
         e.results = (r.e > r.b) ? static_cast<uint8_t>(std::min<size_t>(r.e - r.b, 255)) : 0;
         packKey(key, e.key, e.keyLen);
+        e.valsLen = 0;
+        if (g_diagContent.load(std::memory_order_relaxed)) packVals(r, e.vals, e.valsLen);
         diagPush(e);
     }
     return r;
@@ -538,6 +564,12 @@ Java_lpt_imehook_NativeBridge_nativeSetDiag(JNIEnv*, jclass, jboolean on) {
     }
 }
 
+// 二级开关：展开内容记录。只翻转标志，不动缓冲（内容只在新事件开启时写入）。
+extern "C" JNIEXPORT void JNICALL
+Java_lpt_imehook_NativeBridge_nativeSetDiagContent(JNIEnv*, jclass, jboolean on) {
+    g_diagContent.store(on == JNI_TRUE, std::memory_order_release);
+}
+
 /** 取走并清空详细日志缓冲；返回空串表示没有新事件。 */
 extern "C" JNIEXPORT jstring JNICALL
 Java_lpt_imehook_NativeBridge_nativeDrainDiag(JNIEnv* env, jclass) {
@@ -566,6 +598,10 @@ Java_lpt_imehook_NativeBridge_nativeDrainDiag(JNIEnv* env, jclass) {
             out += std::to_string(e.results);
             out += " x=";
             out += std::to_string(e.kind);
+            if (e.valsLen > 0) {
+                out += " v=";
+                out.append(e.vals, e.valsLen);
+            }
             out += '\n';
         }
         g_diagLen = 0;

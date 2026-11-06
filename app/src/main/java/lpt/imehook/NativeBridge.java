@@ -38,6 +38,11 @@ public final class NativeBridge {
     public static native void nativeSetDiag(boolean on);
 
     /**
+     * 二级开关：在详细日志开启的前提下，额外记录展开结果的拼音内容（v= 字段）。
+     */
+    public static native void nativeSetDiagContent(boolean on);
+
+    /**
      * 取走并清空详细日志缓冲。每行一条：
      * t=事件时刻(单调 ns) d=本次耗时(ns) m=模式 s=槽位 k=按键 r=候选数 x=结果类型(0直通 1槽位 2命中 3回退)。
      */
