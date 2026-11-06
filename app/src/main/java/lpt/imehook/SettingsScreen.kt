@@ -62,6 +62,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -369,6 +370,7 @@ private fun StatusCard(ui: SettingsUiState) {
 
 @Composable
 private fun AboutCard() {
+    var showLicense by remember { mutableStateOf(false) }
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLowest),
@@ -384,8 +386,45 @@ private fun AboutCard() {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            HorizontalDivider()
+            // 图标来源声明：Lucide 为 ISC 许可，要求随副本保留版权与许可声明
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "应用图标取自 Lucide（keyboard，ISC 许可）",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = { showLicense = true }) { Text("许可全文") }
+            }
         }
     }
+    if (showLicense) LicenseDialog { showLicense = false }
+}
+
+@Composable
+private fun LicenseDialog(onDismiss: () -> Unit) {
+    val ctx = LocalContext.current
+    val text = remember {
+        runCatching {
+            ctx.assets.open("licenses/lucide-keyboard.txt").bufferedReader().use { it.readText() }
+        }.getOrElse { "许可文件缺失" }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+        title = { Text("第三方许可") },
+        text = {
+            Text(
+                text,
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+                modifier = Modifier
+                    .heightIn(max = 360.dp)
+                    .verticalScroll(rememberScrollState()),
+            )
+        },
+    )
 }
 
 // ---------------- Tab2：管理自定义双拼 ----------------
