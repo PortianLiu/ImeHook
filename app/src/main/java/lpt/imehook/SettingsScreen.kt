@@ -22,10 +22,10 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Done
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -475,17 +475,21 @@ private fun EditorCard(ui: SettingsUiState, m: SettingsUiState.SchemeModel) {
                     modifier = Modifier.weight(1f),
                 )
                 IconButton(onClick = ui::openIniEditor) {
-                    Icon(Icons.Filled.ContentPaste, contentDescription = "编辑 ini", modifier = Modifier.size(20.dp))
+                    Icon(Icons.Filled.Edit, contentDescription = "编辑 ini", modifier = Modifier.size(20.dp))
                 }
                 IconButton(onClick = ui::saveEditModel) {
-                    Icon(Icons.Filled.Done, contentDescription = "保存", modifier = Modifier.size(20.dp))
+                    Icon(Icons.Filled.Save, contentDescription = "保存", modifier = Modifier.size(20.dp))
                 }
             }
 
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("方案名", style = MaterialTheme.typography.bodySmall, modifier = Modifier.width(52.dp))
-                CompactField(m.newName, { ui.setSchemeName(it) }, Modifier.weight(1f))
-            }
+            OutlinedTextField(
+                value = m.newName,
+                onValueChange = { ui.setSchemeName(it) },
+                singleLine = true,
+                label = { Text("方案名") },
+                textStyle = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.fillMaxWidth(),
+            )
 
             ZeroInitialRow(ui, m)
 
@@ -546,16 +550,16 @@ private fun ZeroInitialRow(ui: SettingsUiState, m: SettingsUiState.SchemeModel) 
     var expanded by remember { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("零声母", style = MaterialTheme.typography.bodySmall, modifier = Modifier.width(52.dp))
-            ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }) {
+            ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }, modifier = Modifier.weight(1f)) {
                 OutlinedTextField(
                     value = SettingsUiState.ziModeLabel(m.ziMode),
                     onValueChange = { },
                     readOnly = true,
                     singleLine = true,
+                    label = { Text("零声母") },
                     textStyle = MaterialTheme.typography.bodySmall,
                     trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
-                    modifier = Modifier.weight(1f).menuAnchor(),
+                    modifier = Modifier.fillMaxWidth().menuAnchor(),
                 )
                 ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
                     SettingsUiState.ZI_MODES.forEach { mode ->
