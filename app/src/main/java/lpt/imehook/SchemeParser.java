@@ -52,11 +52,11 @@ public final class SchemeParser {
     public static final class Scheme {
         /** 最终查询表：键为 1 或 2 个字母，值为完整音节数组。 */
         public final Map<String, List<String>> table = new LinkedHashMap<>();
-        /** 中间结果：声母反转收集（键位字母 → 声母）。 */
+        /** 中间结果 4.3 A：声母反转收集（键位字母 → 声母），取自 buildModel 中途变量 a。 */
         public final Map<String, List<String>> initials = new LinkedHashMap<>();
-        /** 中间结果：韵母反转收集（键位字母 → 韵母）。 */
+        /** 中间结果 4.3 B：韵母反转收集（键位字母 → 韵母），取自 buildModel 中途变量 b。 */
         public final Map<String, List<String>> finals = new LinkedHashMap<>();
-        /** 中间结果：音节栏反转收集（码 → 零声母音节）。 */
+        /** 中间结果 4.6：音节键表（双键 4.6.1 + 单键聚合 4.6.2），与写入 table 的音节来源一致。 */
         public final Map<String, List<String>> syllables = new LinkedHashMap<>();
         public String flat = "";
     }
@@ -312,15 +312,12 @@ public final class SchemeParser {
         Scheme s = new Scheme();
         Map<String, List<String>> table = s.table;
 
-        // 中间结果：反转收集的声母 / 韵母 / 音节键表
+        // 中间结果 4.3：声母反转表（A）与韵母反转表（B），直接取自中途变量
         for (Map.Entry<Character, List<String>> e : a.entrySet()) {
             s.initials.put(String.valueOf(e.getKey()), new ArrayList<>(e.getValue()));
         }
         for (Map.Entry<Character, List<String>> e : b.entrySet()) {
             s.finals.put(String.valueOf(e.getKey()), new ArrayList<>(e.getValue()));
-        }
-        for (String[] e : yinjie) {
-            add(s.syllables, e[1], e[0]);
         }
 
         // 4.5：A × B 叉乘
@@ -335,18 +332,27 @@ public final class SchemeParser {
             }
         }
 
-        // 4.6.1：二字母音节键直接追加
+        // 4.6.1：二字母音节键直接追加（同时落入中间结果音节键表的双键部分）
         for (String[] e : yinjie) {
-            if (e[1].length() == 2) add(table, e[1], e[0]);
+            if (e[1].length() == 2) {
+                add(s.syllables, e[1], e[0]);
+                add(table, e[1], e[0]);
+            }
         }
 
-        // 4.6.2：二字母键取首字母聚合
+        // 4.6.2：二字母键取首字母聚合（中间结果音节键表单键部分）
         for (String[] e : yinjie) {
-            if (e[1].length() == 2) add(table, e[1].substring(0, 1), e[0]);
+            if (e[1].length() == 2) {
+                add(s.syllables, e[1].substring(0, 1), e[0]);
+                add(table, e[1].substring(0, 1), e[0]);
+            }
         }
-        // 音节栏的单字母键
+        // 音节栏的单字母键（中间结果音节键表单键部分）
         for (String[] e : yinjie) {
-            if (e[1].length() == 1) add(table, e[1], e[0]);
+            if (e[1].length() == 1) {
+                add(s.syllables, e[1], e[0]);
+                add(table, e[1], e[0]);
+            }
         }
         // 声母反转后的单字母键（如 b→b）；空声母占位不产生单键值
         for (Map.Entry<Character, List<String>> e : a.entrySet()) {

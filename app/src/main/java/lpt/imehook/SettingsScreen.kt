@@ -718,29 +718,30 @@ private fun MidResultCard(ui: SettingsUiState) {
             }
             if (ui.midExpanded) {
                 Text(
-                    "方案读入内存时当场展开的中间表；热路径直接查合并后的最终表。",
+                    "下表为方案读入内存时当场展开的中途产物（注入前计算过程），热路径直接查合并后的最终表。" +
+                        "若某一键触发异常，可借此分辨是程序计算的问题，还是豆包输入法本身的特性。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                MidTable("声母键表", pr.scheme.initials)
-                MidTable("韵母键表", pr.scheme.finals)
-                MidTable("音节键表", pr.scheme.syllables)
+                MidTable("声母键表", pr.scheme.initials, "4.3 A 反转表")
+                MidTable("韵母键表", pr.scheme.finals, "4.3 B 反转表")
+                MidTable("音节键表", pr.scheme.syllables, "4.6 双键 + 单键聚合")
             }
         }
     }
 }
 
 @Composable
-private fun MidTable(title: String, map: Map<String, List<String>>) {
+private fun MidTable(title: String, map: Map<String, List<String>>, source: String) {
     Column(Modifier.fillMaxWidth()) {
         Text(
-            "$title（${map.size} 项）",
+            "$title（${map.size} 项）· $source",
             style = MaterialTheme.typography.bodySmall,
             fontWeight = FontWeight.SemiBold,
         )
-        map.forEach { (k, v) ->
+        map.entries.sortedBy { it.key }.forEach { (k, v) ->
             Text(
-                "$k = ${v.joinToString(", ")}",
+                "$k = [${v.joinToString(", ")}]",
                 style = MaterialTheme.typography.bodySmall,
                 fontFamily = FontFamily.Monospace,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
