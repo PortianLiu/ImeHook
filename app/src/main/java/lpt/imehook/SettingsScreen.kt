@@ -1,5 +1,6 @@
 package lpt.imehook
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -60,9 +61,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -142,6 +147,9 @@ fun SettingsScreen(
     ui.patches?.takeIf { it.isNotEmpty() }?.let { list ->
         PatchesDialog(list) { ui.dismissDialog() }
     }
+    if (ui.newPrompt) NewPromptDialog(ui)
+    if (ui.pendingSelect != null) PendingSelectDialog(ui)
+    ui.requiredMissing?.let { list -> RequiredDialog(list, ui) }
 }
 
 // ---------------- 顶栏重启 ----------------
@@ -233,7 +241,7 @@ private fun SchemePickerCard(ui: SettingsUiState) {
     SectionCard("当前方案") {
         if (ui.schemes.isEmpty()) {
             Text(
-                "还没有方案，去「管理自定义双拼」导入。",
+                "还没有方案，去「管理自定义双拼」新建。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -243,7 +251,7 @@ private fun SchemePickerCard(ui: SettingsUiState) {
             onExpandedChange = { expanded = it },
         ) {
             OutlinedTextField(
-                value = ui.selected,
+                value = ui.displayName(ui.selected),
                 onValueChange = { },
                 readOnly = true,
                 singleLine = true,
@@ -256,8 +264,8 @@ private fun SchemePickerCard(ui: SettingsUiState) {
             ExposedDropdownMenu(expanded = expanded && ui.schemes.isNotEmpty(), onDismissRequest = { expanded = false }) {
                 ui.schemes.forEach { name ->
                     DropdownMenuItem(
-                        text = { Text(name) },
-                        onClick = { ui.select(name); expanded = false },
+                        text = { Text(ui.displayName(name)) },
+                        onClick = { ui.requestSelect(name); expanded = false },
                     )
                 }
             }
@@ -497,8 +505,10 @@ private fun LicenseDialog(onDismiss: () -> Unit) {
 @Composable
 private fun Tab2(ui: SettingsUiState, onImport: () -> Unit, onExport: () -> Unit) {
     // 编辑区与方案栏选中项双向联动：任何途径（列表点选、删除回退、导入完成）
-    // 改变了 selected，这里都会自动重建编辑模型。
-    LaunchedEffect(ui.selected) { ui.loadEditModel() }
+    // 改变了 selected，这里都会自动重建编辑模型；新建草稿不随选中项重建。
+    LaunchedEffect(ui.selected) {
+        if (ui.formMode == SettingsUiState.FormMode.EDIT) ui.loadEditModel()
+    }
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -506,7 +516,7 @@ private fun Tab2(ui: SettingsUiState, onImport: () -> Unit, onExport: () -> Unit
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        SchemeListCard(ui, onImport, onExport)
+        SchemeListCard(ui, onExport)
         val m = ui.editModel
         if (m == null) {
             Text(
@@ -515,7 +525,10 @@ private fun Tab2(ui: SettingsUiState, onImport: () -> Unit, onExport: () -> Unit
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         } else {
-            EditorCard(ui, m)
+            EditorCard(ui, m, onImport)
+        }
+        if (ui.formMode == SettingsUiState.FormMode.EDIT && ui.parsed != null) {
+            MidResultCard(ui)
         }
         // 底部留几行空位的距离
         Spacer(Modifier.height(96.dp))
@@ -523,7 +536,7 @@ private fun Tab2(ui: SettingsUiState, onImport: () -> Unit, onExport: () -> Unit
 }
 
 @Composable
-private fun SchemeListCard(ui: SettingsUiState, onImport: () -> Unit, onExport: () -> Unit) {
+private fun SchemeListCard(ui: SettingsUiState, onExport: () -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
@@ -532,7 +545,7 @@ private fun SchemeListCard(ui: SettingsUiState, onImport: () -> Unit, onExport: 
             SectionTitle("方案")
             if (ui.schemes.isEmpty()) {
                 Text(
-                    "还没有方案。点「导入」粘贴 ini 或从文件读取，也可先「模板导出」拿到模板。",
+                    "还没有方案。点「新建」从空表或自然码模板开始，也可用右侧编辑区的下载图标从文件导入。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -540,11 +553,15 @@ private fun SchemeListCard(ui: SettingsUiState, onImport: () -> Unit, onExport: 
                 Column {
                     ui.schemes.forEach { name ->
                         Row(
-                            modifier = Modifier.fillMaxWidth().clickable { ui.select(name) },
+                            modifier = Modifier.fillMaxWidth().clickable { ui.requestSelect(name) },
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            RadioButton(selected = name == ui.selected, onClick = { ui.select(name) })
-                            Text(name, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                            RadioButton(selected = name == ui.selected, onClick = { ui.requestSelect(name) })
+                            Text(
+                                ui.displayName(name),
+                                style = MaterialTheme.typography.bodyLarge,
+                                modifier = Modifier.weight(1f),
+                            )
                             IconButton(onClick = { ui.requestDelete(name) }) {
                                 Icon(Icons.Filled.Delete, contentDescription = "删除", modifier = Modifier.size(18.dp))
                             }
@@ -553,7 +570,7 @@ private fun SchemeListCard(ui: SettingsUiState, onImport: () -> Unit, onExport: 
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = ui::newScheme, modifier = Modifier.weight(1f)) { Text("导入") }
+                OutlinedButton(onClick = ui::requestNew, modifier = Modifier.weight(1f)) { Text("新建") }
                 OutlinedButton(onClick = onExport, modifier = Modifier.weight(1f)) { Text("模板导出") }
             }
         }
@@ -563,8 +580,9 @@ private fun SchemeListCard(ui: SettingsUiState, onImport: () -> Unit, onExport: 
 // ---------------- 方案编辑 ----------------
 
 @Composable
-private fun EditorCard(ui: SettingsUiState, m: SettingsUiState.SchemeModel) {
-    var section by remember(m.name) { mutableStateOf(0) }
+private fun EditorCard(ui: SettingsUiState, m: SettingsUiState.SchemeModel, onImport: () -> Unit) {
+    var section by remember(m.name, ui.formMode) { mutableStateOf(0) }
+    val isNew = ui.formMode == SettingsUiState.FormMode.NEW
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
@@ -572,7 +590,7 @@ private fun EditorCard(ui: SettingsUiState, m: SettingsUiState.SchemeModel) {
         Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    "方案编辑·${m.name}",
+                    if (isNew) "方案新建" else "方案编辑·${m.name}",
                     style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.primary,
                     fontWeight = FontWeight.SemiBold,
@@ -581,6 +599,7 @@ private fun EditorCard(ui: SettingsUiState, m: SettingsUiState.SchemeModel) {
                 IconButton(onClick = ui::openIniEditor) {
                     Icon(Icons.Filled.Edit, contentDescription = "编辑 ini", modifier = Modifier.size(20.dp))
                 }
+                ImportIcon(onImport)
                 IconButton(onClick = ui::saveEditModel) {
                     Icon(Icons.Filled.Save, contentDescription = "保存", modifier = Modifier.size(20.dp))
                 }
@@ -595,6 +614,16 @@ private fun EditorCard(ui: SettingsUiState, m: SettingsUiState.SchemeModel) {
                 modifier = Modifier.fillMaxWidth(),
             )
 
+            if (isNew) {
+                Text(
+                    "零声母所使用的字母组合请在音节栏目中完整写出\n" +
+                        "等号左边可重复设置，使得两个键都能触发左侧的音\n" +
+                        "有声母定制需求可在声母栏目中补充，默认映射到自身字母",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
             // 分段标签：左对齐小矩形（选中加深），下方一条贯穿整行的长横线
             Column {
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -605,21 +634,117 @@ private fun EditorCard(ui: SettingsUiState, m: SettingsUiState.SchemeModel) {
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
             }
 
+            Text(
+                "右侧可用英文逗号分隔多个映射值，留空表示不写入该项；标 * 的为必填项。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
             // 表体不做内部滚动，跟随整页一起生长
             Column(modifier = Modifier.fillMaxWidth()) {
                 when (section) {
                     0 -> SettingsUiState.INITIALS.forEach { init ->
-                        MapRow(left = init, right = m.sheng[init].orEmpty()) { ui.setSheng(init, it) }
+                        MapRow(init, m.sheng[init].orEmpty(), ui.isInitialRequired(init)) {
+                            ui.setSheng(init, it)
+                        }
                     }
                     1 -> SettingsUiState.FINALS.forEach { fin ->
-                        MapRow(left = fin, right = m.yun[fin].orEmpty()) { ui.setYun(fin, it) }
+                        MapRow(fin, m.yun[fin].orEmpty(), ui.isFinalRequired(fin)) {
+                            ui.setYun(fin, it)
+                        }
                     }
                     else -> SettingsUiState.ZERO_SYLS.forEach { syl ->
-                        val code = m.yinjie.firstOrNull { it.first == syl }?.second.orEmpty()
-                        MapRow(left = syl, right = code) { ui.setYinjie(syl, it) }
+                        MapRow(syl, m.yinjie[syl].orEmpty(), required = true) {
+                            ui.setYinjie(syl, it)
+                        }
                     }
                 }
             }
+        }
+    }
+}
+
+/** 从文件导入入口：向下箭头 + 放平的方括号。 */
+@Composable
+private fun ImportIcon(onClick: () -> Unit) {
+    val color = MaterialTheme.colorScheme.onSurface
+    IconButton(
+        onClick = onClick,
+        modifier = Modifier.semantics { contentDescription = "从文件导入" },
+    ) {
+        Canvas(Modifier.size(20.dp)) {
+            val stroke = 1.8.dp.toPx()
+            val w = size.width
+            val h = size.height
+            val cx = w / 2f
+            // 向下箭头
+            drawLine(color, Offset(cx, h * 0.12f), Offset(cx, h * 0.60f), strokeWidth = stroke, cap = StrokeCap.Round)
+            drawLine(color, Offset(cx - w * 0.16f, h * 0.42f), Offset(cx, h * 0.62f), strokeWidth = stroke, cap = StrokeCap.Round)
+            drawLine(color, Offset(cx + w * 0.16f, h * 0.42f), Offset(cx, h * 0.62f), strokeWidth = stroke, cap = StrokeCap.Round)
+            // 放平的方括号
+            val bx = w * 0.16f
+            drawLine(color, Offset(bx, h * 0.74f), Offset(bx, h * 0.94f), strokeWidth = stroke)
+            drawLine(color, Offset(bx, h * 0.94f), Offset(w - bx, h * 0.94f), strokeWidth = stroke)
+            drawLine(color, Offset(w - bx, h * 0.74f), Offset(w - bx, h * 0.94f), strokeWidth = stroke)
+        }
+    }
+}
+
+/** 中间结果：声母 / 韵母 / 音节三张反转表，展开状态记忆。 */
+@Composable
+private fun MidResultCard(ui: SettingsUiState) {
+    val pr = ui.parsed ?: return
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth().clickable { ui.toggleMid() },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "中间结果",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    if (ui.midExpanded) "收起" else "展开",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (ui.midExpanded) {
+                Text(
+                    "方案读入内存时当场展开的中间表；热路径直接查合并后的最终表。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                MidTable("声母键表", pr.scheme.initials)
+                MidTable("韵母键表", pr.scheme.finals)
+                MidTable("音节键表", pr.scheme.syllables)
+            }
+        }
+    }
+}
+
+@Composable
+private fun MidTable(title: String, map: Map<String, List<String>>) {
+    Column(Modifier.fillMaxWidth()) {
+        Text(
+            "$title（${map.size} 项）",
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.SemiBold,
+        )
+        map.forEach { (k, v) ->
+            Text(
+                "$k = ${v.joinToString(", ")}",
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -647,7 +772,7 @@ private fun SectionTab(text: String, selected: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun MapRow(left: String, right: String, onValue: (String) -> Unit) {
+private fun MapRow(left: String, right: String, required: Boolean, onValue: (String) -> Unit) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -656,8 +781,18 @@ private fun MapRow(left: String, right: String, onValue: (String) -> Unit) {
             left,
             style = MaterialTheme.typography.bodySmall,
             fontFamily = FontFamily.Monospace,
-            modifier = Modifier.width(64.dp),
+            modifier = Modifier.width(56.dp),
         )
+        if (required) {
+            Text(
+                "*",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.width(10.dp),
+            )
+        } else {
+            Spacer(Modifier.width(10.dp))
+        }
         Spacer(Modifier.width(8.dp))
         CompactField(right, onValue, Modifier.weight(1f))
     }
@@ -762,11 +897,14 @@ private fun SchemeDialog(draft: SettingsUiState.Draft, ui: SettingsUiState, onIm
 
 @Composable
 private fun IniDialog(ini: String, ui: SettingsUiState, onDismiss: () -> Unit) {
-    var name by remember { mutableStateOf(ui.selected) }
+    val isNew = ui.formMode == SettingsUiState.FormMode.NEW
+    var name by remember {
+        mutableStateOf(if (isNew) ui.editModel?.newName.orEmpty() else ui.selected)
+    }
     var text by remember { mutableStateOf(ini) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("编辑方案") },
+        title = { Text(if (isNew) "新建方案" else "编辑方案") },
         text = {
             Column(
                 modifier = Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
@@ -783,15 +921,79 @@ private fun IniDialog(ini: String, ui: SettingsUiState, onDismiss: () -> Unit) {
                     value = text,
                     onValueChange = { text = it },
                     label = { Text("码表内容") },
+                    placeholder = {
+                        Text(
+                            EXAMPLE_INI,
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                        )
+                    },
                     textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                     minLines = 12,
                     maxLines = 18,
                     modifier = Modifier.fillMaxWidth(),
                 )
+                if (text.isEmpty()) {
+                    Text(
+                        EXAMPLE_INI,
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         },
         confirmButton = { TextButton(onClick = { ui.saveIni(name, text) }) { Text("保存") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
+}
+
+@Composable
+private fun NewPromptDialog(ui: SettingsUiState) {
+    AlertDialog(
+        onDismissRequest = ui::dismissNewPrompt,
+        title = { Text("新建方案") },
+        text = { Text("是否加载自然码模板作为起点？") },
+        confirmButton = { TextButton(onClick = { ui.startNew(true) }) { Text("加载模板") } },
+        dismissButton = {
+            Row {
+                TextButton(onClick = { ui.startNew(false) }) { Text("空白新建") }
+                TextButton(onClick = ui::dismissNewPrompt) { Text("取消") }
+            }
+        },
+    )
+}
+
+@Composable
+private fun PendingSelectDialog(ui: SettingsUiState) {
+    AlertDialog(
+        onDismissRequest = ui::continueNew,
+        title = { Text("编辑内容尚未保存成新方案") },
+        text = { Text("继续新建会保留当前填写内容；放弃则会丢弃本次填写。") },
+        confirmButton = { TextButton(onClick = ui::continueNew) { Text("继续新建") } },
+        dismissButton = { TextButton(onClick = ui::discardNewAndSelect) { Text("放弃并切换") } },
+    )
+}
+
+@Composable
+private fun RequiredDialog(missing: List<String>, ui: SettingsUiState) {
+    AlertDialog(
+        onDismissRequest = ui::dismissRequired,
+        title = { Text("必填项为空") },
+        text = {
+            Column(modifier = Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState())) {
+                Text("以下必填项尚未填写：", style = MaterialTheme.typography.bodySmall)
+                missing.forEach { item ->
+                    Text(
+                        "• $item",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Text("仍要保存吗？", style = MaterialTheme.typography.bodySmall)
+            }
+        },
+        confirmButton = { TextButton(onClick = ui::forceSaveEditModel) { Text("执意保存") } },
+        dismissButton = { TextButton(onClick = ui::dismissRequired) { Text("返回填写") } },
     )
 }
 

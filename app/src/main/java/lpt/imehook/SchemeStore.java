@@ -14,6 +14,8 @@ public final class SchemeStore {
     public static final String KEY_SCHEMES = "schemes";
     public static final String KEY_ACTIVE = "active_scheme";
     public static final String KEY_INJECTED = "injected_note";
+    /** 中间结果展示区的展开状态，跨启动记忆。 */
+    public static final String KEY_MID_EXPANDED = "mid_expanded";
 
     private final SharedPreferences prefs;
 
@@ -61,7 +63,7 @@ public final class SchemeStore {
         return o == null ? null : o.optString("ini", "");
     }
 
-    /** 保存修订后的 ini 原文；模型不落盘，读入时现算。 */
+    /** 保存原始 ini：导入/编辑后的修订原文；模型不落盘，读入时现算。 */
     public void put(String name, String ini) {
         JSONArray arr = array();
         for (int i = arr.length() - 1; i >= 0; i--) {
@@ -116,5 +118,13 @@ public final class SchemeStore {
 
     public void setInjectedNote(String note) {
         prefs.edit().putString(KEY_INJECTED, note).apply();
+    }
+
+    public boolean midExpanded() {
+        return prefs.getBoolean(KEY_MID_EXPANDED, false);
+    }
+
+    public void setMidExpanded(boolean expanded) {
+        prefs.edit().putBoolean(KEY_MID_EXPANDED, expanded).apply();
     }
 }

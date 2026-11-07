@@ -52,24 +52,50 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
     var iniEditing by mutableStateOf<String?>(null)
         private set
 
+    /** 新建询问：是否加载自然码模板。 */
+    var newPrompt by mutableStateOf(false)
+        private set
+    /** 新建过程中点击其他方案时的待切换目标。 */
+    var pendingSelect by mutableStateOf<String?>(null)
+        private set
+    /** 必填项缺失、等待用户确认是否执意保存。 */
+    var requiredMissing by mutableStateOf<List<String>?>(null)
+        private set
+
+    /** 编辑区处于「方案编辑」还是「方案新建」。 */
+    var formMode by mutableStateOf(FormMode.EDIT)
+        private set
+
+    /** 中间结果展示区的展开状态（跨启动记忆）。 */
+    var midExpanded by mutableStateOf(store.midExpanded())
+        private set
+
     /** Tab2 中正在编辑的方案结构表。 */
     var editModel by mutableStateOf<SchemeModel?>(null)
         private set
 
-    private var parsed: SchemeParser.ParseResult? = null
+    /** 当前选中方案的内存模型（试打 / 中间结果 / 注入共用）。 */
+    var parsed by mutableStateOf<SchemeParser.ParseResult?>(null)
+        private set
+
+    /** 必填项不完整的方案（按显示名判断尾缀用）。 */
+    private var missingFlags by mutableStateOf<Map<String, Boolean>>(emptyMap())
 
     data class Draft(val name: String, val content: String, val original: String?)
+
+    enum class FormMode { EDIT, NEW }
 
     data class SchemeModel(
         val name: String,
         val sheng: MutableMap<String, String>,
         val yun: MutableMap<String, String>,
-        val yinjie: MutableList<Pair<String, String>>,
+        val yinjie: MutableMap<String, String>,
         var newName: String,
     )
 
     init {
         reloadScheme()
+        recomputeMissing()
         updateStatus()
     }
 
@@ -83,11 +109,37 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
     // 这里只改选中态，不手动触发编辑区刷新。
     fun select(name: String) {
         if (name == selected) return
+        formMode = FormMode.EDIT
         selected = name
         if (name.isNotEmpty()) store.setActive(name)
         reloadScheme()
         runTest()
         updateStatus()
+    }
+
+    /** 界面点选方案：新建过程中需要先确认是否丢弃当前填写。 */
+    fun requestSelect(name: String) {
+        if (formMode == FormMode.NEW) {
+            val m = editModel
+            if (m != null && schemeHasContent(m)) { pendingSelect = name; return }
+            formMode = FormMode.EDIT
+            select(name)
+            loadEditModel()
+            return
+        }
+        select(name)
+    }
+
+    fun continueNew() { pendingSelect = null }
+
+    fun discardNewAndSelect() {
+        val target = pendingSelect
+        pendingSelect = null
+        formMode = FormMode.EDIT
+        if (target != null) {
+            select(target)
+            loadEditModel()
+        }
     }
 
     fun refreshSchemes() {
@@ -100,9 +152,39 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
             store.setActive(selected)
         }
         reloadScheme()
+        recomputeMissing()
         runTest()
         updateStatus()
     }
+
+    fun displayName(name: String): String =
+        if (missingFlags[name] == true) "$name（缺必填）" else name
+
+    /** 逐个方案检查必填项是否齐全（只决定显示尾缀，不改存储名）。 */
+    private fun recomputeMissing() {
+        val flags = mutableMapOf<String, Boolean>()
+        for (n in schemes) {
+            val ini = store.iniOf(n) ?: continue
+            val (sheng, yun, yinjie) = parseIni(ini)
+            flags[n] = missingRequired(sheng, yun, yinjie).isNotEmpty()
+        }
+        missingFlags = flags
+    }
+
+    fun toggleMid() {
+        midExpanded = !midExpanded
+        store.setMidExpanded(midExpanded)
+    }
+
+    fun isInitialRequired(initial: String): Boolean = initial in REQUIRED_INITIALS
+
+    fun isFinalRequired(fin: String): Boolean =
+        isRequiredFinal(fin, editModel?.yun.orEmpty())
+
+    private fun schemeHasContent(m: SchemeModel): Boolean =
+        m.sheng.values.any { hasValue(it) } ||
+            m.yun.values.any { hasValue(it) } ||
+            m.yinjie.values.any { hasValue(it) }
 
     private fun reloadScheme() {
         parsed = effectiveScheme(selected)
@@ -138,7 +220,31 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
 
     // ---------------- 方案库 ----------------
 
-    fun newScheme() { editing = Draft(defaultSchemeName(), "", null) }
+    fun requestNew() { newPrompt = true }
+
+    fun dismissNewPrompt() { newPrompt = false }
+
+    /** 开始新建：可选加载自然码模板，直接复用下方表单承担新建。 */
+    fun startNew(withTemplate: Boolean) {
+        newPrompt = false
+        formMode = FormMode.NEW
+        val (sheng, yun, yinjie) = if (withTemplate) {
+            parseIni(templateContent())
+        } else {
+            Triple(
+                LinkedHashMap<String, String>(),
+                LinkedHashMap<String, String>(),
+                LinkedHashMap<String, String>(),
+            )
+        }
+        editModel = SchemeModel(
+            name = "",
+            sheng = sheng,
+            yun = yun,
+            yinjie = yinjie,
+            newName = defaultSchemeName(),
+        )
+    }
 
     /** 自定义方案N：取 N 的最小排除值。 */
     fun defaultSchemeName(): String {
@@ -152,6 +258,7 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
 
     fun editSelected() {
         if (selected.isEmpty()) { toast("先选择一个方案"); return }
+        formMode = FormMode.EDIT
         tab = 1
         loadEditModel()
     }
@@ -164,28 +271,32 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
 
     fun dismissDialog() { editing = null; deleting = null; patches = null; iniEditing = null }
 
-    /** 打开 ini 编辑：内容为修订后的原文。 */
+    fun dismissRequired() { requiredMissing = null }
+
+    /** 打开 ini 编辑：新建时实时由表单生成，空项不形成一行。 */
     fun openIniEditor() {
+        if (formMode == FormMode.NEW) {
+            iniEditing = editModel?.let { buildIni(it) } ?: ""
+            return
+        }
         if (selected.isEmpty()) { toast("先选择一个方案"); return }
         iniEditing = store.iniOf(selected) ?: ""
     }
 
-    /** 保存 ini（可同时改名）。 */
+    /** 保存 ini（可同时改名）；新建时直接落盘为新方案并切换到编辑态。 */
     fun saveIni(newName: String, text: String) {
-        val name = selected
-        if (name.isEmpty()) { toast("先选择一个方案"); return }
         val target = newName.trim()
         if (target.isEmpty()) { toast("名称不能为空"); return }
-        if (target != name && store.exists(target)) { toast("名称已存在"); return }
+        val isNew = formMode == FormMode.NEW
+        if (store.exists(target) && (isNew || target != selected)) { toast("名称已存在"); return }
         val pr = try { SchemeParser.parseWithPatches(text) }
         catch (e: IllegalArgumentException) { toast("解析失败：" + e.message); return }
         if (pr.scheme.table.isEmpty()) { toast("解析结果为空表"); return }
-        if (target != name) {
-            store.rename(name, target)
-            selected = target
-            store.setActive(target)
-        }
+        if (!isNew && target != selected) store.rename(selected, target)
         store.put(target, pr.ini)
+        store.setActive(target)
+        selected = target
+        formMode = FormMode.EDIT
         iniEditing = null
         refreshSchemes()
         loadEditModel()
@@ -203,8 +314,10 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
         store.put(name, pr.ini)
         store.setActive(name)
         selected = name
+        formMode = FormMode.EDIT
         editing = null
         refreshSchemes()
+        loadEditModel()
         if (pr.patches.isNotEmpty()) patches = pr.patches
         else toast("已保存：$name（${pr.scheme.table.size} 个键有候选）")
     }
@@ -240,6 +353,7 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
     // ---------------- Tab2 结构编辑 ----------------
 
     fun loadEditModel() {
+        if (formMode == FormMode.NEW) return
         if (selected.isEmpty()) { editModel = null; return }
         val ini = store.iniOf(selected) ?: run { editModel = null; return }
         val (sheng, yun, yinjie) = parseIni(ini)
@@ -247,29 +361,26 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
             name = selected,
             sheng = sheng,
             yun = yun,
-            yinjie = yinjie.toMutableList(),
+            yinjie = yinjie,
             newName = selected,
         )
     }
 
     fun setSheng(initial: String, key: String) {
         val m = editModel ?: return
-        m.sheng[initial] = key.take(1)
+        m.sheng[initial] = key
         editModel = m.copy()
     }
 
-    fun setYun(final: String, key: String) {
+    fun setYun(fin: String, key: String) {
         val m = editModel ?: return
-        m.yun[final] = key.take(1)
+        m.yun[fin] = key
         editModel = m.copy()
     }
 
     fun setYinjie(syl: String, code: String) {
         val m = editModel ?: return
-        val c = code.take(2)
-        val idx = m.yinjie.indexOfFirst { it.first == syl }
-        if (idx >= 0) m.yinjie[idx] = syl to c
-        else m.yinjie.add(syl to c)
+        m.yinjie[syl] = code
         editModel = m.copy()
     }
 
@@ -278,44 +389,57 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
         editModel = m.copy(newName = name)
     }
 
+    /** 保存表单：先校验必填项，缺项时先弹确认。 */
     fun saveEditModel() {
         val m = editModel ?: return
         val target = m.newName.trim()
         if (target.isEmpty()) { toast("名称不能为空"); return }
-        if (target != m.name && store.exists(target)) { toast("名称已存在"); return }
+        val editingExisting = formMode == FormMode.EDIT && m.name.isNotEmpty()
+        if (store.exists(target) && (!editingExisting || target != m.name)) {
+            toast("名称已存在"); return
+        }
+        val missing = missingRequired(m.sheng, m.yun, m.yinjie)
+        if (missing.isNotEmpty()) { requiredMissing = missing; return }
+        persistModel(m, target)
+    }
+
+    fun forceSaveEditModel() {
+        val m = editModel ?: return
+        requiredMissing = null
+        persistModel(m, m.newName.trim())
+    }
+
+    private fun persistModel(m: SchemeModel, target: String) {
+        if (target.isEmpty()) { toast("名称不能为空"); return }
         val ini = buildIni(m)
         val pr = try { SchemeParser.parseWithPatches(ini) }
         catch (e: IllegalArgumentException) { toast("解析失败：" + e.message); return }
         if (pr.scheme.table.isEmpty()) { toast("解析结果为空表"); return }
-        if (target != m.name) {
+        if (formMode == FormMode.EDIT && m.name.isNotEmpty() && target != m.name) {
             store.rename(m.name, target)
-            if (selected == m.name) {
-                selected = target
-                store.setActive(target)
-            }
         }
         store.put(target, pr.ini)
+        store.setActive(target)
+        selected = target
+        formMode = FormMode.EDIT
         refreshSchemes()
         loadEditModel()
         toast("已保存：$target")
     }
 
-    /** 把结构表还原成 ini 文本。 */
+    /** 把结构表还原成 ini 文本：一格里多个值用英文逗号分隔，空项不形成一行。 */
     private fun buildIni(m: SchemeModel): String {
         val sb = StringBuilder()
-        sb.append("[sheng]\n")
-        for ((k, v) in m.sheng) {
-            if (v.isNotEmpty()) sb.append("$k=$v\n")
+        fun appendSection(title: String, rows: List<String>) {
+            if (rows.isEmpty()) return
+            if (sb.isNotEmpty()) sb.append('\n')
+            sb.append('[').append(title).append("]\n")
+            rows.forEach { sb.append(it).append('\n') }
         }
-        sb.append("\n[yun]\n")
-        for ((k, v) in m.yun) {
-            if (v.isNotEmpty()) sb.append("$k=$v\n")
-        }
-        sb.append("\n[yinjie]\n")
-        for ((syl, code) in m.yinjie) {
-            if (code.isNotEmpty()) sb.append("$syl=$code\n")
-        }
-        return sb.toString()
+        appendSection("sheng", m.sheng.flatMap { (k, v) -> tokens(v, 1).map { "$k=$it" } })
+        appendSection("yun", m.yun.flatMap { (k, v) -> tokens(v, 1).map { "$k=$it" } })
+        appendSection("yinjie", m.yinjie.flatMap { (k, v) -> tokens(v, 2).map { "$k=$it" } })
+        return sb.toString().trimEnd()
     }
 
     // ---------------- 生效 / 还原 / 重启 ----------------
@@ -442,11 +566,55 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
             "a", "ai", "an", "ang", "ao", "e", "ei", "en", "eng", "er", "o", "ou"
         )
 
+        /** 单韵母：1.2 规定自映射，可以留空。 */
+        val VOWELS = listOf("a", "e", "i", "o", "u", "v")
+
+        /** 声母中没有默认值的三项。 */
+        val REQUIRED_INITIALS = listOf("ch", "sh", "zh")
+
+        /** 1.3 的化归/补足三组：同组只填一个时另一个可由规则推导。 */
+        val FINAL_GROUPS = listOf(
+            listOf("un", "vn"),
+            listOf("uan", "van"),
+            listOf("ue", "ve"),
+        )
+
+        fun hasValue(v: String?): Boolean =
+            v?.split(',')?.any { it.trim().isNotEmpty() } == true
+
+        /** 该韵母此时是否必填（同组另一项已填时可由规则推导，可空）。 */
+        fun isRequiredFinal(fin: String, yun: Map<String, String>): Boolean {
+            if (fin in VOWELS) return false
+            for (g in FINAL_GROUPS) {
+                if (fin in g) return g.none { it != fin && hasValue(yun[it]) }
+            }
+            return true
+        }
+
+        /** 必填项清单：声母 ch/sh/zh、除可推导者外的韵母、全部音节。 */
+        fun missingRequired(
+            sheng: Map<String, String>,
+            yun: Map<String, String>,
+            yinjie: Map<String, String>,
+        ): List<String> {
+            val out = mutableListOf<String>()
+            REQUIRED_INITIALS.forEach { if (!hasValue(sheng[it])) out += "声母 $it" }
+            FINALS.forEach { if (isRequiredFinal(it, yun) && !hasValue(yun[it])) out += "韵母 $it" }
+            ZERO_SYLS.forEach { if (!hasValue(yinjie[it])) out += "音节 $it" }
+            return out
+        }
+
+        private fun tokens(v: String, maxLen: Int): List<String> =
+            v.split(',').map { it.trim().lowercase() }.filter { it.isNotEmpty() }.map { it.take(maxLen) }
+
         /** 把 ini 文本解析成 sheng / yun / yinjie 三张表（供结构编辑）。 */
-        fun parseIni(ini: String): Triple<MutableMap<String, String>, MutableMap<String, String>, MutableList<Pair<String, String>>> {
+        fun parseIni(ini: String): Triple<MutableMap<String, String>, MutableMap<String, String>, MutableMap<String, String>> {
             val sheng = LinkedHashMap<String, String>()
             val yun = LinkedHashMap<String, String>()
-            val yinjie = mutableListOf<Pair<String, String>>()
+            val yinjie = LinkedHashMap<String, String>()
+            fun put(map: MutableMap<String, String>, k: String, v: String) {
+                map[k] = if (map.containsKey(k)) map[k] + "," + v else v
+            }
             var section = ""
             for (raw in ini.split("\r?\n".toRegex())) {
                 var line = raw
@@ -464,9 +632,9 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
                 val right = line.substring(eq + 1).trim().lowercase()
                 if (left.isEmpty() || right.isEmpty()) continue
                 when (section) {
-                    "sheng" -> sheng[left] = right.substring(0, 1)
-                    "yun" -> yun[left] = right.substring(0, 1)
-                    "yinjie" -> yinjie.add(left to right.take(2))
+                    "sheng" -> put(sheng, left, right.substring(0, 1))
+                    "yun" -> put(yun, left, right.substring(0, 1))
+                    "yinjie" -> put(yinjie, left, right.take(2))
                 }
             }
             return Triple(sheng, yun, yinjie)

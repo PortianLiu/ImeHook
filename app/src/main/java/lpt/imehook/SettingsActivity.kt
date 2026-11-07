@@ -8,7 +8,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.core.view.WindowCompat
 
 class SettingsActivity : ComponentActivity() {

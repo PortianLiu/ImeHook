@@ -52,12 +52,18 @@ public final class SchemeParser {
     public static final class Scheme {
         /** 最终查询表：键为 1 或 2 个字母，值为完整音节数组。 */
         public final Map<String, List<String>> table = new LinkedHashMap<>();
+        /** 中间结果：声母反转收集（键位字母 → 声母）。 */
+        public final Map<String, List<String>> initials = new LinkedHashMap<>();
+        /** 中间结果：韵母反转收集（键位字母 → 韵母）。 */
+        public final Map<String, List<String>> finals = new LinkedHashMap<>();
+        /** 中间结果：音节栏反转收集（码 → 零声母音节）。 */
+        public final Map<String, List<String>> syllables = new LinkedHashMap<>();
         public String flat = "";
     }
 
     public static final class ParseResult {
         public final Scheme scheme;
-        /** 修订后的 ini 原文，可直接持久化。 */
+        /** 修订后的原文，即本模块所称的「原始 ini」，可直接持久化。 */
         public final String ini;
         public final List<String> patches;
         public ParseResult(Scheme scheme, String ini, List<String> patches) {
@@ -305,6 +311,17 @@ public final class SchemeParser {
 
         Scheme s = new Scheme();
         Map<String, List<String>> table = s.table;
+
+        // 中间结果：反转收集的声母 / 韵母 / 音节键表
+        for (Map.Entry<Character, List<String>> e : a.entrySet()) {
+            s.initials.put(String.valueOf(e.getKey()), new ArrayList<>(e.getValue()));
+        }
+        for (Map.Entry<Character, List<String>> e : b.entrySet()) {
+            s.finals.put(String.valueOf(e.getKey()), new ArrayList<>(e.getValue()));
+        }
+        for (String[] e : yinjie) {
+            add(s.syllables, e[1], e[0]);
+        }
 
         // 4.5：A × B 叉乘
         for (Map.Entry<Character, List<String>> ea : a.entrySet()) {
