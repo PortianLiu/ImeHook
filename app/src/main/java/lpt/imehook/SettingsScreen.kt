@@ -596,10 +596,10 @@ private fun EditorCard(ui: SettingsUiState, m: SettingsUiState.SchemeModel, onIm
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.weight(1f),
                 )
-                IconButton(onClick = ui::openIniEditor) {
-                    Icon(Icons.Filled.Edit, contentDescription = "编辑 ini", modifier = Modifier.size(20.dp))
+                IconButton(onClick = onImport) {
+                    Icon(Icons.Filled.Edit, contentDescription = "从文件导入", modifier = Modifier.size(20.dp))
                 }
-                ImportIcon(onImport)
+                ImportIcon(ui::openIniEditor)
                 IconButton(onClick = ui::saveEditModel) {
                     Icon(Icons.Filled.Save, contentDescription = "保存", modifier = Modifier.size(20.dp))
                 }
@@ -664,13 +664,13 @@ private fun EditorCard(ui: SettingsUiState, m: SettingsUiState.SchemeModel, onIm
     }
 }
 
-/** 从文件导入入口：向下箭头 + 放平的方括号。 */
+/** ini 原文编辑入口：向下箭头 + 放平的方括号。 */
 @Composable
 private fun ImportIcon(onClick: () -> Unit) {
     val color = MaterialTheme.colorScheme.onSurface
     IconButton(
         onClick = onClick,
-        modifier = Modifier.semantics { contentDescription = "从文件导入" },
+        modifier = Modifier.semantics { contentDescription = "编辑 ini 原文" },
     ) {
         Canvas(Modifier.size(20.dp)) {
             val stroke = 1.8.dp.toPx()
