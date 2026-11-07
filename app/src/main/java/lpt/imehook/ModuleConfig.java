@@ -36,9 +36,9 @@ public final class ModuleConfig {
 
     /** 关闭，完全原生行为 */
     public static final int MODE_OFF = 0;
-    /** 启用内置隐藏槽位（改写 scheme id） */
+    /** 把所有调用固定到内置隐藏槽位（改写 scheme id） */
     public static final int MODE_SLOT = 1;
-    /** 完全自定义映射表 */
+    /** 完全自定义映射表（全槽生效；不使用 slot，未命中直接返回空） */
     public static final int MODE_CUSTOM = 2;
 
     private static final String HEADER_TABLE = "---table---";

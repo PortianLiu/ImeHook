@@ -7,7 +7,6 @@ import android.widget.Toast
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import lpt.imehook.SchemeParser.Guess
 
 /**
  * 界面状态 + 业务动作。UI 只读这些 state，改配置都走这里，
@@ -57,7 +56,7 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
     var editModel by mutableStateOf<SchemeModel?>(null)
         private set
 
-    private var parsed: SchemeParser.Scheme? = null
+    private var parsed: SchemeParser.ParseResult? = null
 
     data class Draft(val name: String, val content: String, val original: String?)
 
@@ -66,9 +65,6 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
         val sheng: MutableMap<String, String>,
         val yun: MutableMap<String, String>,
         val yinjie: MutableList<Pair<String, String>>,
-        var ziMode: Int,
-        var ziKey: String,
-        var ziPriority: Boolean,
         var newName: String,
     )
 
@@ -112,15 +108,11 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
         parsed = effectiveScheme(selected)
     }
 
-    /** 解析 + 应用零声母方案，得到实际用于试打 / 注入的表。 */
-    private fun effectiveScheme(name: String): SchemeParser.Scheme? {
+    /** 读入 ini 原文并当场展开成内存模型（试打 / 注入共用）。 */
+    private fun effectiveScheme(name: String): SchemeParser.ParseResult? {
         if (name.isEmpty()) return null
         val ini = store.iniOf(name) ?: return null
-        val s = try { SchemeParser.parse(ini) } catch (e: Exception) { return null }
-        val mode = store.zeroInitialMode(name)
-        val key = store.zeroInitialKey(name)
-        val pri = store.zeroInitialPriority(name)
-        return SchemeParser.applyZeroInitial(s, mode, key, pri)
+        return try { SchemeParser.parseWithPatches(ini) } catch (e: Exception) { null }
     }
 
     // ---------------- 试打 ----------------
@@ -135,7 +127,7 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
             while (i < raw.length) {
                 val k = raw.substring(i, minOf(i + 2, raw.length))
                 append(k).append(" → ")
-                val v = s.table[k]
+                val v = s.scheme.table[k]
                 if (v.isNullOrEmpty()) append("（无候选）")
                 else append(v.joinToString(", "))
                 append('\n')
@@ -172,7 +164,7 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
 
     fun dismissDialog() { editing = null; deleting = null; patches = null; iniEditing = null }
 
-    /** 打开 ini 编辑：内容为 app 处理过（补全后）的那份。 */
+    /** 打开 ini 编辑：内容为修订后的原文。 */
     fun openIniEditor() {
         if (selected.isEmpty()) { toast("先选择一个方案"); return }
         iniEditing = store.iniOf(selected) ?: ""
@@ -193,8 +185,7 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
             selected = target
             store.setActive(target)
         }
-        store.put(target, pr.ini, pr.scheme.normalizedJson(),
-            store.zeroInitialMode(target), store.zeroInitialKey(target), store.zeroInitialPriority(target))
+        store.put(target, pr.ini)
         iniEditing = null
         refreshSchemes()
         loadEditModel()
@@ -209,8 +200,7 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
         catch (e: IllegalArgumentException) { toast("解析失败：" + e.message); return }
         if (pr.scheme.table.isEmpty()) { toast("解析结果为空表"); return }
         if (draft.original != null && draft.original != name) store.rename(draft.original, name)
-        store.put(name, pr.ini, pr.scheme.normalizedJson(),
-            pr.guess.mode, pr.guess.key, false)
+        store.put(name, pr.ini)
         store.setActive(name)
         selected = name
         editing = null
@@ -258,9 +248,6 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
             sheng = sheng,
             yun = yun,
             yinjie = yinjie.toMutableList(),
-            ziMode = store.zeroInitialMode(selected),
-            ziKey = store.zeroInitialKey(selected),
-            ziPriority = store.zeroInitialPriority(selected),
             newName = selected,
         )
     }
@@ -279,25 +266,11 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
 
     fun setYinjie(syl: String, code: String) {
         val m = editModel ?: return
+        val c = code.take(2)
         val idx = m.yinjie.indexOfFirst { it.first == syl }
-        if (idx >= 0) m.yinjie[idx] = syl to code
-        else m.yinjie.add(syl to code)
+        if (idx >= 0) m.yinjie[idx] = syl to c
+        else m.yinjie.add(syl to c)
         editModel = m.copy()
-    }
-
-    fun setZiMode(mode: Int) {
-        val m = editModel ?: return
-        editModel = m.copy(ziMode = mode)
-    }
-
-    fun setZiKey(key: String) {
-        val m = editModel ?: return
-        editModel = m.copy(ziKey = key.take(1))
-    }
-
-    fun setZiPriority(pri: Boolean) {
-        val m = editModel ?: return
-        editModel = m.copy(ziPriority = pri)
     }
 
     fun setSchemeName(name: String) {
@@ -321,7 +294,7 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
                 store.setActive(target)
             }
         }
-        store.put(target, ini, pr.scheme.normalizedJson(), m.ziMode, m.ziKey, m.ziPriority)
+        store.put(target, pr.ini)
         refreshSchemes()
         loadEditModel()
         toast("已保存：$target")
@@ -354,14 +327,14 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
         cfg.table = ""
 
         if (mode == ModuleConfig.MODE_CUSTOM) {
-            val s = effectiveScheme(selected)
-            if (s == null) { toast("请先新建或导入一个自定义方案"); return }
-            if (s.table.isEmpty()) { toast("解析结果为空表"); return }
-            cfg.table = s.flat
+            val pr = effectiveScheme(selected)
+                ?: run { toast("请先新建或导入一个自定义方案"); return }
+            if (pr.scheme.table.isEmpty()) { toast("解析结果为空表"); return }
+            cfg.table = pr.scheme.flat
             store.setActive(selected)
-            store.setInjectedNote("方案 $selected → 槽 $slot（运行时注入，原件未修改，还原=关闭注入）")
+            store.setInjectedNote("方案 $selected（全槽生效；未命中的键返回空，不回退原生）")
         } else if (mode == ModuleConfig.MODE_SLOT) {
-            store.setInjectedNote("内置槽 $slot（未替换表）")
+            store.setInjectedNote("所有调用固定到内置槽 $slot（未替换表）")
         } else {
             store.setInjectedNote("")
         }
@@ -427,20 +400,19 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
         val sb = StringBuilder()
         sb.append("已保存：").append(
             when (cfg.mode) {
-                ModuleConfig.MODE_CUSTOM -> "注入自定义"
+                ModuleConfig.MODE_CUSTOM -> "注入自定义（全槽生效，未命中不回退）"
                 ModuleConfig.MODE_SLOT -> "切换内置槽"
                 else -> "原生"
             }
         )
-        if (cfg.mode != ModuleConfig.MODE_OFF) sb.append("，槽 ").append(cfg.slot)
+        if (cfg.mode == ModuleConfig.MODE_SLOT) sb.append("，槽 ").append(cfg.slot)
         sb.append('\n')
 
         if (selected.isNotEmpty()) {
-            val s = parsed
-            if (s != null) {
+            val pr = parsed
+            if (pr != null) {
                 sb.append("方案 ").append(selected)
-                    .append("：").append(s.table.size).append(" 键有候选")
-                    .append("，占位键 ").append(s.placeholders).append('\n')
+                    .append("：").append(pr.scheme.table.size).append(" 键有候选\n")
             } else {
                 sb.append("方案 ").append(selected).append("：解析失败\n")
             }
@@ -458,35 +430,17 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
         const val TARGET_PKG = "com.bytedance.android.doubaoime"
 
         val INITIALS = listOf(
-            "b", "p", "m", "f", "d", "t", "n", "l", "g", "k", "h",
-            "j", "q", "x", "zh", "ch", "sh", "r", "z", "c", "s", "y", "w"
+            "b", "c", "ch", "d", "f", "g", "h", "j", "k", "l", "m", "n",
+            "p", "q", "r", "s", "sh", "t", "w", "x", "y", "z", "zh"
         )
         val FINALS = listOf(
-            "a", "o", "e", "i", "u", "v", "ai", "ei", "ui", "ao", "ou", "iu",
-            "ie", "ve", "er", "an", "en", "in", "un", "ang", "eng", "ing", "ong",
-            "ia", "ua", "uo", "uai", "iao", "ian", "uan", "iang", "uang", "iong"
+            "a", "ai", "an", "ang", "ao", "e", "ei", "en", "eng", "i", "ia", "ian",
+            "iang", "iao", "ie", "in", "ing", "iong", "iu", "o", "ong", "ou", "u",
+            "ua", "uai", "uan", "uang", "ue", "ui", "un", "uo", "v", "van", "ve", "vn"
         )
         val ZERO_SYLS = listOf(
-            "a", "o", "e", "i", "u", "v", "ai", "ei", "ao", "ou",
-            "an", "en", "ang", "eng", "er", "ong"
+            "a", "ai", "an", "ang", "ao", "e", "ei", "en", "eng", "er", "o", "ou"
         )
-
-        fun ziModeLabel(mode: Int): String = when (mode) {
-            SchemeParser.ZI_FIXED -> "指定固定键"
-            SchemeParser.ZI_FIRST_LETTER -> "纯韵母首字母"
-            SchemeParser.ZI_FIRST_LETTER_FULL -> "纯韵母首字母（双字母全拼）"
-            else -> "未选定"
-        }
-
-        /** 可选的三项（未选定不是选项，只是未识别出的状态）。 */
-        val ZI_MODES = listOf(
-            SchemeParser.ZI_FIXED,
-            SchemeParser.ZI_FIRST_LETTER,
-            SchemeParser.ZI_FIRST_LETTER_FULL,
-        )
-
-        fun Guess.toLabel(): String =
-            ziModeLabel(mode) + (if (mode == SchemeParser.ZI_FIXED && key.isNotEmpty()) " · 键 $key" else "")
 
         /** 把 ini 文本解析成 sheng / yun / yinjie 三张表（供结构编辑）。 */
         fun parseIni(ini: String): Triple<MutableMap<String, String>, MutableMap<String, String>, MutableList<Pair<String, String>>> {
@@ -512,7 +466,7 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
                 when (section) {
                     "sheng" -> sheng[left] = right.substring(0, 1)
                     "yun" -> yun[left] = right.substring(0, 1)
-                    "yinjie" -> yinjie.add(left to right)
+                    "yinjie" -> yinjie.add(left to right.take(2))
                 }
             }
             return Triple(sheng, yun, yinjie)

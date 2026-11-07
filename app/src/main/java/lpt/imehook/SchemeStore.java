@@ -8,7 +8,7 @@ import org.json.JSONObject;
 import java.util.ArrayList;
 import java.util.List;
 
-/** 自定义方案库：名称 / 原始 ini / 归一化结构 / 零声母设置，全部存在模块自己的 SharedPreferences。 */
+/** 自定义方案库：名称 + 用户 ini 原文，存在模块自己的 SharedPreferences。 */
 public final class SchemeStore {
 
     public static final String KEY_SCHEMES = "schemes";
@@ -61,28 +61,8 @@ public final class SchemeStore {
         return o == null ? null : o.optString("ini", "");
     }
 
-    public String normalizedOf(String name) {
-        JSONObject o = find(name);
-        return o == null ? null : o.optString("normalized", "{}");
-    }
-
-    public int zeroInitialMode(String name) {
-        JSONObject o = find(name);
-        return o == null ? SchemeParser.ZI_OTHER : o.optInt("ziMode", SchemeParser.ZI_OTHER);
-    }
-
-    public String zeroInitialKey(String name) {
-        JSONObject o = find(name);
-        return o == null ? "" : o.optString("ziKey", "");
-    }
-
-    public boolean zeroInitialPriority(String name) {
-        JSONObject o = find(name);
-        return o != null && o.optBoolean("ziPriority", false);
-    }
-
-    /** 全量保存（含归一化结构与零声母设置）。 */
-    public void put(String name, String ini, String normalized, int ziMode, String ziKey, boolean ziPriority) {
+    /** 保存修订后的 ini 原文；模型不落盘，读入时现算。 */
+    public void put(String name, String ini) {
         JSONArray arr = array();
         for (int i = arr.length() - 1; i >= 0; i--) {
             JSONObject o = arr.optJSONObject(i);
@@ -92,33 +72,8 @@ public final class SchemeStore {
             JSONObject o = new JSONObject();
             o.put("name", name);
             o.put("ini", ini);
-            o.put("normalized", normalized);
-            o.put("ziMode", ziMode);
-            o.put("ziKey", ziKey == null ? "" : ziKey);
-            o.put("ziPriority", ziPriority);
             arr.put(o);
         } catch (Exception ignored) {
-        }
-        write(arr);
-    }
-
-    /** 旧签名兼容（导入时用不到零声母，默认 OTHER）。 */
-    public void put(String name, String ini, String normalized) {
-        put(name, ini, normalized, SchemeParser.ZI_OTHER, "", false);
-    }
-
-    public void setZeroInitial(String name, int ziMode, String ziKey, boolean ziPriority) {
-        JSONArray arr = array();
-        for (int i = 0; i < arr.length(); i++) {
-            JSONObject o = arr.optJSONObject(i);
-            if (o != null && name.equals(o.optString("name"))) {
-                try {
-                    o.put("ziMode", ziMode);
-                    o.put("ziKey", ziKey == null ? "" : ziKey);
-                    o.put("ziPriority", ziPriority);
-                } catch (Exception ignored) {
-                }
-            }
         }
         write(arr);
     }

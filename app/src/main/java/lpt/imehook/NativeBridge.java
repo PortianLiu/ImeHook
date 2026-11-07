@@ -12,7 +12,7 @@ public final class NativeBridge {
      * 下发配置。
      *
      * @param mode  0=关闭 1=槽位改写 2=自定义表
-     * @param slot  目标槽位 id（1..7），仅 mode=1 生效
+     * @param slot  槽位 id（1..7）：mode=1 强制使用该槽；mode=2 不使用该参数
      * @param table 自定义映射表，格式：每行 key=py1,py2（仅 mode=2 生效）
      */
     public static native void nativeConfigure(int mode, int slot, String table);
@@ -44,10 +44,10 @@ public final class NativeBridge {
 
     /**
      * 取走并清空详细日志缓冲。每行一条：
-     * t=事件时刻(单调 ns) d=本次耗时(ns) m=模式 s=槽位 k=按键 r=候选数 x=结果类型(0直通 1槽位 2命中 3回退)。
+     * t=事件时刻(单调 ns) d=本次耗时(ns) m=模式 s=槽位 k=按键 r=候选数 x=结果类型(0直通 1槽位 2命中 3未命中返回空)。
      */
     public static native String nativeDrainDiag();
 
-    /** 常驻计数快照：installed/unsupported/converts/custom/fallback。 */
+    /** 常驻计数快照：installed/unsupported/converts/custom/miss。 */
     public static native String nativeStats();
 }

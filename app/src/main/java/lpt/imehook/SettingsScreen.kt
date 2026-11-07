@@ -31,7 +31,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CenterAlignedTopAppBar
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -179,7 +178,9 @@ private fun Tab1(ui: SettingsUiState, onExportLog: () -> Unit) {
     ) {
         ModeCard(ui)
         SchemePickerCard(ui)
-        SlotCard(ui)
+        if (ui.mode == ModuleConfig.MODE_SLOT) {
+            SlotCard(ui)
+        }
         TestCard(ui)
         ActionBar(ui)
         StatusCard(ui)
@@ -200,10 +201,10 @@ private fun ModeCard(ui: SettingsUiState) {
             ModeRow(ui.mode == ModuleConfig.MODE_OFF, "原生", "不干预，跟随豆包自身的方案设置") {
                 ui.chooseMode(ModuleConfig.MODE_OFF)
             }
-            ModeRow(ui.mode == ModuleConfig.MODE_SLOT, "切换内置槽位", "只改写方案 id，不替换表") {
+            ModeRow(ui.mode == ModuleConfig.MODE_SLOT, "切换内置槽位", "把所有键位展开固定为该槽的原生结果（不替换表）") {
                 ui.chooseMode(ModuleConfig.MODE_SLOT)
             }
-            ModeRow(ui.mode == ModuleConfig.MODE_CUSTOM, "注入自定义方案", "改写 id 并替换该槽的表") {
+            ModeRow(ui.mode == ModuleConfig.MODE_CUSTOM, "自定义方案（全槽生效）", "替换键位展开；表未覆盖的键直接返回空，不回退原生") {
                 ui.chooseMode(ModuleConfig.MODE_CUSTOM)
             }
         }
@@ -267,31 +268,23 @@ private fun SchemePickerCard(ui: SettingsUiState) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SlotCard(ui: SettingsUiState) {
-    val enabled = ui.mode != ModuleConfig.MODE_OFF
     var expanded by remember { mutableStateOf(false) }
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            SectionTitle(
-                when (ui.mode) {
-                    ModuleConfig.MODE_CUSTOM -> "注入目标槽位（表会覆盖这个槽）"
-                    ModuleConfig.MODE_SLOT -> "切换目标槽位（使用该槽的原生表）"
-                    else -> "目标槽位（原生模式下不使用）"
-                }
-            )
-            ExposedDropdownMenuBox(expanded = expanded && enabled, onExpandedChange = { if (enabled) expanded = it }) {
+            SectionTitle("作用槽位（所有调用都按该槽的原生表展开）")
+            ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }) {
                 OutlinedTextField(
                     value = SLOT_LABELS[ui.slot - 1],
                     onValueChange = { },
                     readOnly = true,
-                    enabled = enabled,
                     singleLine = true,
                     trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
                     modifier = Modifier.fillMaxWidth().menuAnchor(),
                 )
-                ExposedDropdownMenu(expanded = expanded && enabled, onDismissRequest = { expanded = false }) {
+                ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
                     SLOT_LABELS.forEachIndexed { index, label ->
                         DropdownMenuItem(text = { Text(label) }, onClick = { ui.chooseSlot(index + 1); expanded = false })
                     }
@@ -454,7 +447,7 @@ private fun AboutCard() {
                     "强制停止/重启后自动恢复原生。\n" +
                     "2. 点「应用设置」即生效（目标进程每秒同步一次配置），不需要重启。\n" +
                     "3. 槽 1/3/4/5/7 的方案身份由键位指纹推断，完整性未验证，行为异常属预期。\n" +
-                    "4. 自定义模式下，表内未覆盖的键会回退到目标槽的原生展开结果。",
+                    "4. 自定义表对所有槽生效，不绑定某个槽；表未覆盖的键直接返回空，不回退原生。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -602,8 +595,6 @@ private fun EditorCard(ui: SettingsUiState, m: SettingsUiState.SchemeModel) {
                 modifier = Modifier.fillMaxWidth(),
             )
 
-            ZeroInitialRow(ui, m)
-
             // 分段标签：左对齐小矩形（选中加深），下方一条贯穿整行的长横线
             Column {
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -652,43 +643,6 @@ private fun SectionTab(text: String, selected: Boolean, onClick: () -> Unit) {
             color = if (selected) MaterialTheme.colorScheme.onSurface
             else MaterialTheme.colorScheme.onSurfaceVariant,
         )
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun ZeroInitialRow(ui: SettingsUiState, m: SettingsUiState.SchemeModel) {
-    var expanded by remember { mutableStateOf(false) }
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }, modifier = Modifier.weight(1f)) {
-                OutlinedTextField(
-                    value = SettingsUiState.ziModeLabel(m.ziMode),
-                    onValueChange = { },
-                    readOnly = true,
-                    singleLine = true,
-                    label = { Text("零声母") },
-                    textStyle = MaterialTheme.typography.bodySmall,
-                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
-                    modifier = Modifier.fillMaxWidth().menuAnchor(),
-                )
-                ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                    SettingsUiState.ZI_MODES.forEach { mode ->
-                        DropdownMenuItem(
-                            text = { Text(SettingsUiState.ziModeLabel(mode)) },
-                            onClick = { ui.setZiMode(mode); expanded = false },
-                        )
-                    }
-                }
-            }
-            if (m.ziMode == SchemeParser.ZI_FIXED) {
-                CompactField(m.ziKey, { ui.setZiKey(it) }, Modifier.width(72.dp))
-            }
-        }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Checkbox(checked = m.ziPriority, onCheckedChange = { ui.setZiPriority(it) })
-            Text("高优先级", style = MaterialTheme.typography.bodySmall)
-        }
     }
 }
 

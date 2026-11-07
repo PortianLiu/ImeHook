@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">双拼扩展</string>
-    <string name="xposed_description">ImeHook：切换豆包输入法内置双拼槽位，或注入自定义双拼映射</string>
+    <string name="xposed_description">ImeHook：切换豆包输入法内置双拼槽位，或向全部槽位注入自定义双拼映射</string>
 </resources>

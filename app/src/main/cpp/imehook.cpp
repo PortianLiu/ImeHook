@@ -8,12 +8,13 @@
 //
 // 三种模式：
 //   0 关闭：直通
-//   1 槽位：入口改写 scheme 首字节为目标槽 id，调用原函数后恢复（启用隐藏内置方案）
-//   2 自定义：先改写 id 到目标槽（统领单函数但按 id 选表，改写即「切换到该槽」），
-//             命中自定义表则自行构造返回 vector，未命中回退该槽的原生展开结果
+//   1 槽位：入口改写 scheme 首字节为所选槽 id，调用原函数后恢复；
+//             所有槽的调用都被固定到该槽（启用隐藏内置方案）
+//   2 自定义：查自定义扁平表并返回，与 *scheme 的 id 无关——全部槽位都会命中这张表；
+//             表未覆盖的键直接返回空数组，不回退原生
 //
-// 注意：sub_59953C 是 7 个槽共用的唯一收口，但表由 *scheme 的 id 选择，
-// 因此「注入某个槽」= 在这个收口上按 id 生效，hook 本身不需要 7 份。
+// 注意：sub_59953C 是 7 个槽共用的唯一收口，表由 *scheme 的 id 选择；
+// 自定义表不参与这套选表，因此 mode 2 不读取 slot，也不改写 id。
 
 #include <jni.h>
 #include <dlfcn.h>
@@ -98,7 +99,7 @@ static std::atomic<bool> g_diagContent{false};
 
 static std::atomic<uint64_t> g_nConvert{0};
 static std::atomic<uint64_t> g_nCustomHit{0};
-static std::atomic<uint64_t> g_nFallback{0};
+static std::atomic<uint64_t> g_nMiss{0};
 
 constexpr size_t kValsCap = 96;  // 展开内容缓冲（逗号分隔的拼音候选，定长不分配）
 
@@ -109,7 +110,7 @@ struct DiagEvent {
     uint8_t  keyLen;
     uint8_t  mode;      // 0 直通 1 槽位 2 自定义
     uint8_t  slot;
-    uint8_t  kind;      // 0 直通 1 槽位改写 2 自定义命中 3 回退原生
+    uint8_t  kind;      // 0 直通 1 槽位改写 2 自定义命中 3 自定义未命中（返回空）
     uint8_t  results;   // 返回候选数
     char     vals[kValsCap];  // 展开内容（二级开关开启时才有）
     uint8_t  valsLen;
@@ -174,7 +175,7 @@ static SpVec expandHook(void* scheme, const SpStr* key) {
     static std::atomic<int> s_calls{0};
     int n = s_calls.fetch_add(1, std::memory_order_relaxed);
     if (n < 3) {
-        LOGI("call#%d mode=%d origId=%d targetId=%d key=%s", n, mode,
+        LOGI("call#%d mode=%d origId=%d slot=%d key=%s", n, mode,
              static_cast<int>(*static_cast<unsigned char*>(scheme)),
              g_slot.load(std::memory_order_relaxed), spToStr(key).c_str());
     }
@@ -189,24 +190,18 @@ static SpVec expandHook(void* scheme, const SpStr* key) {
         r = g_orig(scheme, key);
         *id = origId;
     } else if (mode == 2) {
-        auto* id = static_cast<unsigned char*>(scheme);
-        unsigned char origId = *id;
-        *id = static_cast<unsigned char>(g_slot.load(std::memory_order_relaxed));
-
         auto tbl = std::atomic_load(&g_table);
         std::string k = spToStr(key);
         auto it = tbl->find(k);
         if (it != tbl->end()) {
-            *id = origId;
             r = makeVec(it->second);
             kind = 2;
             g_nCustomHit.fetch_add(1, std::memory_order_relaxed);
         } else {
-            // 未覆盖的键回退到目标槽的原生结果（此时 id 已被改成目标槽）
-            r = g_orig(scheme, key);
-            *id = origId;
+            // 未覆盖的键不兜底：返回空数组
+            r = SpVec{nullptr, nullptr, nullptr};
             kind = 3;
-            g_nFallback.fetch_add(1, std::memory_order_relaxed);
+            g_nMiss.fetch_add(1, std::memory_order_relaxed);
         }
     } else {
         r = g_orig(scheme, key);
@@ -614,7 +609,7 @@ Java_lpt_imehook_NativeBridge_nativeDrainDiag(JNIEnv* env, jclass) {
     return env->NewStringUTF(out.c_str());
 }
 
-/** 常驻计数快照：钩子是否装上、调用/命中/回退次数。 */
+/** 常驻计数快照：钩子是否装上、调用/命中/未命中次数。 */
 extern "C" JNIEXPORT jstring JNICALL
 Java_lpt_imehook_NativeBridge_nativeStats(JNIEnv* env, jclass) {
     std::string s;
@@ -626,7 +621,7 @@ Java_lpt_imehook_NativeBridge_nativeStats(JNIEnv* env, jclass) {
     s += std::to_string(static_cast<unsigned long long>(g_nConvert.load()));
     s += " custom=";
     s += std::to_string(static_cast<unsigned long long>(g_nCustomHit.load()));
-    s += " fallback=";
-    s += std::to_string(static_cast<unsigned long long>(g_nFallback.load()));
+    s += " miss=";
+    s += std::to_string(static_cast<unsigned long long>(g_nMiss.load()));
     return env->NewStringUTF(s.c_str());
 }
