@@ -34,8 +34,9 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
     )
         private set
 
-    var testInput by mutableStateOf("")
-    var testResult by mutableStateOf("")
+    /** 中间结果区：按键检索扁平表（验证模块侧推导）。 */
+    var probeInput by mutableStateOf("")
+    var probeResult by mutableStateOf("")
         private set
     var status by mutableStateOf("")
         private set
@@ -74,11 +75,11 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
     var editModel by mutableStateOf<SchemeModel?>(null)
         private set
 
-    /** 当前选中方案的内存模型（试打 / 中间结果 / 注入共用）。 */
+    /** 当前选中方案的内存模型（中间结果检索 / 注入共用）。 */
     var parsed by mutableStateOf<SchemeParser.ParseResult?>(null)
         private set
 
-    /** 必填项不完整的方案（按显示名判断尾缀用）。 */
+    /** 必填项不完整的方案（显示「（缺项）」尾缀）。 */
     private var missingFlags by mutableStateOf<Map<String, Boolean>>(emptyMap())
 
     data class Draft(val name: String, val content: String, val original: String?)
@@ -113,7 +114,7 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
         selected = name
         if (name.isNotEmpty()) store.setActive(name)
         reloadScheme()
-        runTest()
+        runProbe()
         updateStatus()
     }
 
@@ -153,12 +154,14 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
         }
         reloadScheme()
         recomputeMissing()
-        runTest()
+        runProbe()
         updateStatus()
     }
 
-    fun displayName(name: String): String =
-        if (missingFlags[name] == true) "$name（缺必填）" else name
+    fun isMissing(name: String): Boolean = missingFlags[name] == true
+
+    /** 列表/下拉用纯文本名；缺项尾缀由界面着色绘制。 */
+    fun displayName(name: String): String = name
 
     /** 逐个方案检查必填项是否齐全（只决定显示尾缀，不改存储名）。 */
     private fun recomputeMissing() {
@@ -190,28 +193,33 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
         parsed = effectiveScheme(selected)
     }
 
-    /** 读入 ini 原文并当场展开成内存模型（试打 / 注入共用）。 */
+    /** 读入 ini 原文并当场展开成内存模型（中间结果检索 / 注入共用）。 */
     private fun effectiveScheme(name: String): SchemeParser.ParseResult? {
         if (name.isEmpty()) return null
         val ini = store.iniOf(name) ?: return null
         return try { SchemeParser.parseWithPatches(ini) } catch (e: Exception) { null }
     }
 
-    // ---------------- 试打 ----------------
+    // ---------------- 中间结果：扁平表检索 ----------------
 
-    fun runTest() {
-        val raw = testInput.trim().lowercase()
-        if (raw.isEmpty()) { testResult = ""; return }
+    fun onProbeInput(raw: String) {
+        probeInput = raw
+        runProbe()
+    }
+
+    fun runProbe() {
+        val raw = probeInput.trim().lowercase()
+        if (raw.isEmpty()) { probeResult = ""; return }
         val s = parsed
-        if (s == null) { testResult = "当前方案未解析成功"; return }
-        testResult = buildString {
+        if (s == null) { probeResult = "当前方案未解析成功"; return }
+        probeResult = buildString {
             var i = 0
             while (i < raw.length) {
                 val k = raw.substring(i, minOf(i + 2, raw.length))
                 append(k).append(" → ")
                 val v = s.scheme.table[k]
-                if (v.isNullOrEmpty()) append("（无候选）")
-                else append(v.joinToString(", "))
+                if (v.isNullOrEmpty()) append("[]")
+                else append("[").append(v.joinToString(", ")).append("]")
                 append('\n')
                 i += 2
             }
@@ -455,7 +463,7 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
             if (pr.scheme.table.isEmpty()) { toast("解析结果为空表"); return }
             cfg.table = pr.scheme.flat
             store.setActive(selected)
-            store.setInjectedNote("方案 $selected（全槽生效；未命中的键返回空，不回退原生）")
+            store.setInjectedNote("方案 $selected（未命中返回空）")
         } else if (mode == ModuleConfig.MODE_SLOT) {
             store.setInjectedNote("所有调用固定到内置槽 $slot（未替换表）")
         } else {
@@ -523,7 +531,7 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
         val sb = StringBuilder()
         sb.append("已保存：").append(
             when (cfg.mode) {
-                ModuleConfig.MODE_CUSTOM -> "注入自定义（全槽生效，未命中不回退）"
+                ModuleConfig.MODE_CUSTOM -> "注入自定义（未命中返回空）"
                 ModuleConfig.MODE_SLOT -> "切换内置槽"
                 else -> "原生"
             }

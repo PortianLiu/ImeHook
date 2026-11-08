@@ -45,7 +45,6 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
@@ -68,6 +67,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -75,16 +75,19 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 
-/** 槽位身份：2/6 有字符串实测，其余为键位指纹推断（不保证）。 */
+/** 槽位身份：2/6 有字符串实测，其余为键位指纹推断。 */
 private val SLOT_LABELS = listOf(
-    "槽 1 · 智能ABC双拼（推断，不保证）",
-    "槽 2 · 自然码（原生可选）",
-    "槽 3 · 搜狗双拼（推断，不保证）",
-    "槽 4 · 微软双拼（推断，不保证）",
-    "槽 5 · 拼音加加双拼（推断，不保证）",
-    "槽 6 · 小鹤（原生可选）",
-    "槽 7 · 紫光双拼（推断，不保证）",
+    "槽 1 · 智能ABC双拼（推断）",
+    "槽 2 · 自然码",
+    "槽 3 · 搜狗双拼（推断）",
+    "槽 4 · 微软双拼（推断）",
+    "槽 5 · 拼音加加双拼（推断）",
+    "槽 6 · 小鹤",
+    "槽 7 · 紫光双拼（推断）",
 )
+
+/** 缺项尾缀：柔和警告红（非强警示）。 */
+private val MissingAccent = Color(0xFFC46A6A)
 
 /** 导入弹窗里的内容示例。 */
 private const val EXAMPLE_INI = """[sheng]
@@ -189,7 +192,7 @@ private fun Tab1(ui: SettingsUiState, onExportLog: () -> Unit) {
         if (ui.mode == ModuleConfig.MODE_SLOT) {
             SlotCard(ui)
         }
-        TestCard(ui)
+        TestCard()
         ActionBar(ui)
         StatusCard(ui)
         DiagCard(ui, onExportLog)
@@ -206,13 +209,13 @@ private fun ModeCard(ui: SettingsUiState) {
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             SectionTitle("模式")
-            ModeRow(ui.mode == ModuleConfig.MODE_OFF, "原生", "不干预，跟随豆包自身的方案设置") {
+            ModeRow(ui.mode == ModuleConfig.MODE_OFF, "原生", "不干预") {
                 ui.chooseMode(ModuleConfig.MODE_OFF)
             }
-            ModeRow(ui.mode == ModuleConfig.MODE_SLOT, "切换内置槽位", "把所有键位展开固定为该槽的原生结果（不替换表）") {
+            ModeRow(ui.mode == ModuleConfig.MODE_SLOT, "切换内置槽位", "固定为所选槽的原生展开") {
                 ui.chooseMode(ModuleConfig.MODE_SLOT)
             }
-            ModeRow(ui.mode == ModuleConfig.MODE_CUSTOM, "自定义方案（全槽生效）", "替换键位展开；表未覆盖的键直接返回空，不回退原生") {
+            ModeRow(ui.mode == ModuleConfig.MODE_CUSTOM, "自定义方案", "未覆盖的键返回空，不回退原生") {
                 ui.chooseMode(ModuleConfig.MODE_CUSTOM)
             }
         }
@@ -241,7 +244,7 @@ private fun SchemePickerCard(ui: SettingsUiState) {
     SectionCard("当前方案") {
         if (ui.schemes.isEmpty()) {
             Text(
-                "还没有方案，去「管理自定义双拼」新建。",
+                "暂无方案，请到「管理自定义双拼」新建。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -251,7 +254,7 @@ private fun SchemePickerCard(ui: SettingsUiState) {
             onExpandedChange = { expanded = it },
         ) {
             OutlinedTextField(
-                value = ui.displayName(ui.selected),
+                value = schemeLabel(ui, ui.selected),
                 onValueChange = { },
                 readOnly = true,
                 singleLine = true,
@@ -259,12 +262,16 @@ private fun SchemePickerCard(ui: SettingsUiState) {
                 label = { Text("方案") },
                 placeholder = { Text("（无）") },
                 trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
+                textStyle = MaterialTheme.typography.bodyLarge.copy(
+                    color = if (ui.isMissing(ui.selected)) MissingAccent
+                    else MaterialTheme.colorScheme.onSurface,
+                ),
                 modifier = Modifier.fillMaxWidth().menuAnchor(),
             )
             ExposedDropdownMenu(expanded = expanded && ui.schemes.isNotEmpty(), onDismissRequest = { expanded = false }) {
                 ui.schemes.forEach { name ->
                     DropdownMenuItem(
-                        text = { Text(ui.displayName(name)) },
+                        text = { SchemeNameText(ui, name) },
                         onClick = { ui.requestSelect(name); expanded = false },
                     )
                 }
@@ -282,7 +289,7 @@ private fun SlotCard(ui: SettingsUiState) {
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            SectionTitle("作用槽位（所有调用都按该槽的原生表展开）")
+            SectionTitle("作用槽位")
             ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }) {
                 OutlinedTextField(
                     value = SLOT_LABELS[ui.slot - 1],
@@ -303,45 +310,28 @@ private fun SlotCard(ui: SettingsUiState) {
 }
 
 @Composable
-private fun TestCard(ui: SettingsUiState) {
+private fun TestCard() {
+    // 仅供系统输入法当场打字验证注入效果；模块侧推导检索在「中间结果」
+    var draft by remember { mutableStateOf("") }
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             SectionTitle("试用")
-            Text(
-                "换完方案可以在这里当场敲两键试试解出的拼音，与是否注入无关。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
             OutlinedTextField(
-                value = ui.testInput,
-                onValueChange = { ui.testInput = it; ui.runTest() },
+                value = draft,
+                onValueChange = { draft = it },
                 singleLine = true,
-                label = { Text("测试输入") },
-                placeholder = { Text("例如 we、sf、ni") },
+                label = { Text("输入框") },
+                placeholder = { Text("用当前输入法打字验证") },
                 modifier = Modifier.fillMaxWidth(),
             )
-            if (ui.testInput.isNotEmpty()) {
+            if (draft.isNotEmpty()) {
                 TextButton(
-                    onClick = { ui.testInput = ""; ui.runTest() },
+                    onClick = { draft = "" },
                     modifier = Modifier.align(Alignment.End),
                 ) { Text("清空") }
-            }
-            if (ui.testResult.isNotEmpty()) {
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerHighest,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(
-                        ui.testResult.trimEnd(),
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontFamily = FontFamily.Monospace,
-                        modifier = Modifier.padding(12.dp),
-                    )
-                }
             }
         }
     }
@@ -388,8 +378,7 @@ private fun DiagCard(ui: SettingsUiState, onExportLog: () -> Unit) {
                 Column(Modifier.weight(1f)) {
                     SectionTitle("诊断日志")
                     Text(
-                        "常驻部分只统计调用/命中次数和异常，开销可以忽略；详细日志会记录每次按键的键位、候选数与耗时，" +
-                            "默认关闭，且只保存在本机。",
+                        "详细日志记录按键级事件，默认关，仅本机保存",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -398,7 +387,7 @@ private fun DiagCard(ui: SettingsUiState, onExportLog: () -> Unit) {
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    "记录展开结果（拼音内容，用于排查特定音节失效）",
+                    "同时记录展开出的拼音",
                     style = MaterialTheme.typography.bodySmall,
                     color = if (ui.diag) MaterialTheme.colorScheme.onSurfaceVariant
                     else MaterialTheme.colorScheme.outline,
@@ -451,12 +440,8 @@ private fun AboutCard() {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("说明", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             Text(
-                "1. 注入是运行时行为：只在豆包输入法进程内 hook，不修改 APK、不写目标数据；" +
-                    "强制停止/重启后自动恢复原生。\n" +
-                    "2. 点「应用设置」即生效（目标进程经 ContentObserver 同步），不需要重启；" +
-                    "模块进程被杀后仍可用目标侧缓存的上次配置。\n" +
-                    "3. 槽 1/3/4/5/7 的方案身份由键位指纹推断，完整性未验证，行为异常属预期。\n" +
-                    "4. 自定义表对所有槽生效，不绑定某个槽；表未覆盖的键直接返回空，不回退原生。",
+                "注入只在豆包进程内生效，不改 APK。「应用设置」后即时同步；模块被杀仍可用目标侧缓存。" +
+                    "推断槽位身份未经验证。自定义表未覆盖的键返回空。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -521,7 +506,7 @@ private fun Tab2(ui: SettingsUiState, onImport: () -> Unit, onExport: () -> Unit
         val m = ui.editModel
         if (m == null) {
             Text(
-                "先在上方选一个方案，这里会出现它的映射表。",
+                "上方选中方案后，在此编辑映射表。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -546,7 +531,7 @@ private fun SchemeListCard(ui: SettingsUiState, onExport: () -> Unit) {
             SectionTitle("方案")
             if (ui.schemes.isEmpty()) {
                 Text(
-                    "还没有方案。点「新建」从空表或自然码模板开始，也可用右侧编辑区的下载图标从文件导入。",
+                    "点「新建」，或用编辑区导入图标从文件导入。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -558,8 +543,9 @@ private fun SchemeListCard(ui: SettingsUiState, onExport: () -> Unit) {
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             RadioButton(selected = name == ui.selected, onClick = { ui.requestSelect(name) })
-                            Text(
-                                ui.displayName(name),
+                            SchemeNameText(
+                                ui,
+                                name,
                                 style = MaterialTheme.typography.bodyLarge,
                                 modifier = Modifier.weight(1f),
                             )
@@ -597,10 +583,11 @@ private fun EditorCard(ui: SettingsUiState, m: SettingsUiState.SchemeModel, onIm
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.weight(1f),
                 )
-                IconButton(onClick = onImport) {
-                    Icon(Icons.Filled.Edit, contentDescription = "从文件导入", modifier = Modifier.size(20.dp))
+                // 导入图标（下载箭头）/ 编辑图标（铅笔）/ 保存 —— 勿再对调
+                ImportIcon(onImport)
+                IconButton(onClick = ui::openIniEditor) {
+                    Icon(Icons.Filled.Edit, contentDescription = "编辑 ini 原文", modifier = Modifier.size(20.dp))
                 }
-                ImportIcon(ui::openIniEditor)
                 IconButton(onClick = ui::saveEditModel) {
                     Icon(Icons.Filled.Save, contentDescription = "保存", modifier = Modifier.size(20.dp))
                 }
@@ -617,9 +604,7 @@ private fun EditorCard(ui: SettingsUiState, m: SettingsUiState.SchemeModel, onIm
 
             if (isNew) {
                 Text(
-                    "零声母所使用的字母组合请在音节栏目中完整写出\n" +
-                        "等号左边可重复设置，使得两个键都能触发左侧的音\n" +
-                        "有声母定制需求可在声母栏目中补充，默认映射到自身字母",
+                    "零声母写在音节栏；等号左可重复；声母默认映到自身字母。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -636,7 +621,7 @@ private fun EditorCard(ui: SettingsUiState, m: SettingsUiState.SchemeModel, onIm
             }
 
             Text(
-                "右侧可用英文逗号分隔多个映射值，留空表示不写入该项；标 * 的为必填项。",
+                "右侧逗号分隔多值；空项不写入；* 为必填。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -665,13 +650,13 @@ private fun EditorCard(ui: SettingsUiState, m: SettingsUiState.SchemeModel, onIm
     }
 }
 
-/** ini 原文编辑入口：向下箭头 + 放平的方括号。 */
+/** 从文件导入：向下箭头 + 托盘。 */
 @Composable
 private fun ImportIcon(onClick: () -> Unit) {
     val color = MaterialTheme.colorScheme.onSurface
     IconButton(
         onClick = onClick,
-        modifier = Modifier.semantics { contentDescription = "编辑 ini 原文" },
+        modifier = Modifier.semantics { contentDescription = "从文件导入" },
     ) {
         Canvas(Modifier.size(20.dp)) {
             val stroke = 1.8.dp.toPx()
@@ -682,7 +667,7 @@ private fun ImportIcon(onClick: () -> Unit) {
             drawLine(color, Offset(cx, h * 0.12f), Offset(cx, h * 0.60f), strokeWidth = stroke, cap = StrokeCap.Round)
             drawLine(color, Offset(cx - w * 0.16f, h * 0.42f), Offset(cx, h * 0.62f), strokeWidth = stroke, cap = StrokeCap.Round)
             drawLine(color, Offset(cx + w * 0.16f, h * 0.42f), Offset(cx, h * 0.62f), strokeWidth = stroke, cap = StrokeCap.Round)
-            // 放平的方括号
+            // 放平的方括号 / 托盘
             val bx = w * 0.16f
             drawLine(color, Offset(bx, h * 0.74f), Offset(bx, h * 0.94f), strokeWidth = stroke)
             drawLine(color, Offset(bx, h * 0.94f), Offset(w - bx, h * 0.94f), strokeWidth = stroke)
@@ -691,7 +676,7 @@ private fun ImportIcon(onClick: () -> Unit) {
     }
 }
 
-/** 中间结果：声母 / 韵母 / 音节三张反转表，展开状态记忆。 */
+/** 中间结果：键检索 + 声母 / 韵母 / 音节反转表。 */
 @Composable
 private fun MidResultCard(ui: SettingsUiState) {
     val pr = ui.parsed ?: return
@@ -718,9 +703,33 @@ private fun MidResultCard(ui: SettingsUiState) {
                 )
             }
             if (ui.midExpanded) {
+                // 紧凑检索放在栏目开头：验证模块侧扁平表推导，不整表铺开
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    CompactField(
+                        value = ui.probeInput,
+                        onValueChange = { ui.onProbeInput(it) },
+                        modifier = Modifier.weight(1f),
+                        placeholder = "键检索，如 we",
+                    )
+                    if (ui.probeInput.isNotEmpty()) {
+                        TextButton(onClick = { ui.onProbeInput("") }) { Text("清空") }
+                    }
+                }
+                if (ui.probeResult.isNotEmpty()) {
+                    Text(
+                        ui.probeResult.trimEnd(),
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
                 Text(
-                    "下表为方案读入内存时当场展开的中途产物（注入前计算过程），热路径直接查合并后的最终表。" +
-                        "若某一键触发异常，可借此分辨是程序计算的问题，还是豆包输入法本身的特性。",
+                    "下表为读入 ini 后的内存中途表；热路径查合并后的最终表。" +
+                        "实打某键异常时，用上方检索核对该键的推导候选，以区分模块展开有误还是豆包自身行为。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -802,7 +811,12 @@ private fun MapRow(left: String, right: String, required: Boolean, onValue: (Str
 
 /** 紧凑输入格：BasicTextField + 细边框，比 OutlinedTextField 矮一半。 */
 @Composable
-private fun CompactField(value: String, onValueChange: (String) -> Unit, modifier: Modifier = Modifier) {
+private fun CompactField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    placeholder: String? = null,
+) {
     Box(
         modifier = modifier
             .height(30.dp)
@@ -810,6 +824,13 @@ private fun CompactField(value: String, onValueChange: (String) -> Unit, modifie
             .padding(horizontal = 8.dp),
         contentAlignment = Alignment.CenterStart,
     ) {
+        if (value.isEmpty() && !placeholder.isNullOrEmpty()) {
+            Text(
+                placeholder,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+            )
+        }
         BasicTextField(
             value = value,
             onValueChange = onValueChange,
@@ -827,6 +848,26 @@ private fun CompactField(value: String, onValueChange: (String) -> Unit, modifie
         )
     }
 }
+
+/** 方案名 + 可选「（缺项）」柔和警告色尾缀。 */
+@Composable
+private fun SchemeNameText(
+    ui: SettingsUiState,
+    name: String,
+    modifier: Modifier = Modifier,
+    style: TextStyle = MaterialTheme.typography.bodyLarge,
+) {
+    Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
+        Text(name, style = style)
+        if (ui.isMissing(name)) {
+            Text("（缺项）", style = style, color = MissingAccent)
+        }
+    }
+}
+
+/** OutlinedTextField 等只吃 String 时的展示名。 */
+private fun schemeLabel(ui: SettingsUiState, name: String): String =
+    if (name.isEmpty()) "" else if (ui.isMissing(name)) "$name（缺项）" else name
 
 // ---------------- 通用 ----------------
 
