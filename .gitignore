@@ -2,6 +2,9 @@
 build/
 */build/
 local.properties
+key.properties
+*.jks
+*.keystore
 *.iml
 .idea/
 .cxx/
