@@ -188,7 +188,10 @@ private fun Tab1(ui: SettingsUiState, onExportLog: () -> Unit) {
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         ModeCard(ui)
-        SchemePickerCard(ui)
+        // 当前方案只服务于自定义模式；槽位模式不应出现该栏目
+        if (ui.mode == ModuleConfig.MODE_CUSTOM) {
+            SchemePickerCard(ui)
+        }
         if (ui.mode == ModuleConfig.MODE_SLOT) {
             SlotCard(ui)
         }
@@ -446,10 +449,12 @@ private fun AboutCard() {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             HorizontalDivider()
-            // 图标来源声明：Lucide 为 ISC 许可，要求随副本保留版权与许可声明
+            // ISC 要求保留版权声明；作者署名为 Lucide Icons and Contributors
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    "应用图标取自 Lucide（keyboard，ISC 许可）",
+                    "应用图标：Lucide Icons「keyboard」\n" +
+                        "https://lucide.dev/icons/keyboard\n" +
+                        "ISC License · Copyright (c) Lucide Icons and Contributors",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f),
@@ -703,7 +708,13 @@ private fun MidResultCard(ui: SettingsUiState) {
                 )
             }
             if (ui.midExpanded) {
-                // 紧凑检索放在栏目开头：验证模块侧扁平表推导，不整表铺开
+                Text(
+                    "下表为读入 ini 后的内存中途表；热路径查合并后的最终表。" +
+                        "实打某键异常时，用下方检索核对该键的推导候选，以区分模块展开有误还是豆包自身行为。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                // 检索：小字之后、声母键表之前
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -727,12 +738,6 @@ private fun MidResultCard(ui: SettingsUiState) {
                         color = MaterialTheme.colorScheme.onSurface,
                     )
                 }
-                Text(
-                    "下表为读入 ini 后的内存中途表；热路径查合并后的最终表。" +
-                        "实打某键异常时，用上方检索核对该键的推导候选，以区分模块展开有误还是豆包自身行为。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
                 MidTable("声母键表", pr.scheme.initials)
                 MidTable("韵母键表", pr.scheme.finals)
                 MidTable("音节键表", pr.scheme.syllables)
