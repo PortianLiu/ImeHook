@@ -443,7 +443,7 @@ private fun AboutCard() {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("说明", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             Text(
-                "注入只在豆包进程内生效，不改 APK。「应用设置」后即时同步；模块被杀仍可用目标侧缓存。" +
+                "注入只在豆包输入法进程内生效，不改 APK。「应用设置」后即时同步；模块被杀仍可用目标侧缓存。" +
                     "推断槽位身份未经验证。自定义表未覆盖的键返回空。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -710,7 +710,7 @@ private fun MidResultCard(ui: SettingsUiState) {
             if (ui.midExpanded) {
                 Text(
                     "下表为读入 ini 后的内存中途表；热路径查合并后的最终表。" +
-                        "实打某键异常时，用下方检索核对该键的推导候选，以区分模块展开有误还是豆包自身行为。",
+                        "实打某键异常时，用下方检索核对该键的推导候选，以区分模块展开有误还是豆包输入法自身行为。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
