@@ -5,8 +5,9 @@
     许可 ISC License, Copyright (c) Lucide Icons and Contributors
     许可全文随安装包分发：app/src/main/assets/licenses/lucide-keyboard.txt
 
-    原始图标为 24×24 描边图形；此处用 group 缩放并居中到自适应图标 108×108 画布的安全区。
-    底色为白，字形使用主题绿 #136B4B 以保持对比度。
+    原始图标为 24×24 描边图形（见 ReverseAnalysis/origin/keyboard.svg）。
+    缩放到约 40×40（scale 1.67）并居中，在白色自适应图标底上留出更大留白。
+    字形使用主题绿 #136B4B。
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
@@ -14,10 +15,10 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
     <group
-        android:scaleX="2.3333"
-        android:scaleY="2.3333"
-        android:translateX="26"
-        android:translateY="26">
+        android:scaleX="1.6667"
+        android:scaleY="1.6667"
+        android:translateX="34"
+        android:translateY="34">
         <path
             android:pathData="M4,4h16a2,2 0,0 1,2 2v12a2,2 0,0 1,-2 2h-16a2,2 0,0 1,-2,-2v-12a2,2 0,0 1,2,-2z"
             android:fillColor="#00000000"

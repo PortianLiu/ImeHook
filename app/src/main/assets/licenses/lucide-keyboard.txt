@@ -1,6 +1,7 @@
-Lucide "keyboard" icon
-https://lucide.dev/icons/keyboard
-Used as the launcher icon of this application.
+Lucide icon: "keyboard"
+Source: https://lucide.dev/icons/keyboard
+Used as the launcher icon of this application
+(original SVG also kept at ReverseAnalysis/origin/keyboard.svg).
 
 ISC License
 
@@ -18,6 +19,6 @@ WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
 ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-Note: the keyboard glyph above is an original Lucide icon. It is not among
-the icons derived from the Feather project, so the Feather MIT notice does
-not apply to it.
+Note: the "keyboard" glyph is an original Lucide icon. It is not among
+the icons derived from the Feather project, so the Feather/Cole Bemis
+MIT notice does not apply to it.
