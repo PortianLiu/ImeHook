@@ -723,19 +723,19 @@ private fun MidResultCard(ui: SettingsUiState) {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                MidTable("声母键表", pr.scheme.initials, "4.3 A 反转表")
-                MidTable("韵母键表", pr.scheme.finals, "4.3 B 反转表")
-                MidTable("音节键表", pr.scheme.syllables, "4.6 双键 + 单键聚合")
+                MidTable("声母键表", pr.scheme.initials)
+                MidTable("韵母键表", pr.scheme.finals)
+                MidTable("音节键表", pr.scheme.syllables)
             }
         }
     }
 }
 
 @Composable
-private fun MidTable(title: String, map: Map<String, List<String>>, source: String) {
+private fun MidTable(title: String, map: Map<String, List<String>>) {
     Column(Modifier.fillMaxWidth()) {
         Text(
-            "$title（${map.size} 项）· $source",
+            "$title（${map.size} 项）",
             style = MaterialTheme.typography.bodySmall,
             fontWeight = FontWeight.SemiBold,
         )

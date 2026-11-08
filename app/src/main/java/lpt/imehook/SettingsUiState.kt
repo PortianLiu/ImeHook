@@ -366,22 +366,21 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
         )
     }
 
+    // 注意：map 必须换成新实例再 copy。若原地改 MutableMap 后 copy()，
+    // 新旧实例逐字段相等（共享同一 map 引用），Compose 判为无变化不重组，输入框弹回旧值。
     fun setSheng(initial: String, key: String) {
         val m = editModel ?: return
-        m.sheng[initial] = key
-        editModel = m.copy()
+        editModel = m.copy(sheng = LinkedHashMap(m.sheng).apply { put(initial, key) })
     }
 
     fun setYun(fin: String, key: String) {
         val m = editModel ?: return
-        m.yun[fin] = key
-        editModel = m.copy()
+        editModel = m.copy(yun = LinkedHashMap(m.yun).apply { put(fin, key) })
     }
 
     fun setYinjie(syl: String, code: String) {
         val m = editModel ?: return
-        m.yinjie[syl] = code
-        editModel = m.copy()
+        editModel = m.copy(yinjie = LinkedHashMap(m.yinjie).apply { put(syl, code) })
     }
 
     fun setSchemeName(name: String) {
