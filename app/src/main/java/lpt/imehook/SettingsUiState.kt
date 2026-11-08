@@ -497,7 +497,7 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
         cfg.publish(ctx)
         diag = on
         if (!on) diagContent = false
-        toast(if (on) "已开启详细日志，目标进程 1 秒内生效" else "已关闭详细日志")
+        toast(if (on) "已开启详细日志，目标进程将立即生效" else "已关闭详细日志")
     }
 
     fun chooseDiagContent(on: Boolean) {

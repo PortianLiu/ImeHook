@@ -13,9 +13,10 @@ import java.io.File;
 import java.io.FileNotFoundException;
 
 /**
- * 只读配置通道：把模块私有的 config.txt 通过 Binder 暴露给目标进程。
+ * 只读配置通道：把模块私有的 config.txt / targets.txt 通过 Binder 暴露给目标进程。
  * 目标进程与模块 uid 不同，无法直接读模块的数据目录，而 ContentProvider 不受文件权限限制。
- * 只实现读取：openFile 读配置正文，query 返回版本号（文件修改时间）。
+ * 读取：openFile 读正文，query 返回版本号或模块 APK 路径；写入侧用 notifyChange 触发
+ * 目标进程 ContentObserver（不再靠秒级轮询）。
  */
 public final class ConfigProvider extends ContentProvider {
 

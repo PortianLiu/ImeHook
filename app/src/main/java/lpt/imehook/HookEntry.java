@@ -3,7 +3,7 @@ package lpt.imehook;
 import android.app.Application;
 import android.content.Context;
 import android.content.pm.PackageManager;
-import android.os.Bundle;
+import android.database.ContentObserver;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Process;
@@ -33,17 +33,12 @@ public class HookEntry implements IXposedHookLoadPackage {
     private static volatile String sExitMark = null;
     /** 详细日志开关（由设置页控制）；只有这里为 true 时才把按键级事件排空出去。 */
     private static volatile boolean sDiag = false;
+    /** 是否已成功把一份配置灌进 native（含镜像懒加载）；失败重载时据此决定是否跳过。 */
+    private static volatile boolean sConfigApplied = false;
 
-    /** 常驻日志：安装/配置/异常等低频事件，始终开启。 */
+    /** 常驻日志：安装/配置/异常等低频事件，始终开启。必须走 unstable，避免拖死输入法进程。 */
     private static void pushLog(Context ctx, String lines) {
-        if (lines == null || lines.isEmpty()) return;
-        try {
-            Bundle b = new Bundle();
-            b.putString("lines", lines);
-            ctx.getContentResolver().call(ModuleConfig.LOG_URI, "appendLog", null, b);
-        } catch (Throwable ignored) {
-            // 模块进程被停止/未安装时静默丢弃，不影响输入法
-        }
+        ModuleConfig.appendLogUnstable(ctx, lines);
     }
 
     private static void drainDiag(Context ctx) {
@@ -112,21 +107,36 @@ public class HookEntry implements IXposedHookLoadPackage {
 
         // libshell.so 可能在 Application.onCreate 之后才加载，钩 loadLibrary 做延迟重试
         hookLoadLibraryRetry(vc);
-        // 模块改配置后立即生效，无需重启目标 App
+        // 模块改配置后经 ContentObserver 立即生效；详细日志仍按需定时排空
         observeConfig(sCtx);
     }
 
-    private static void applyConfig(Context ctx, boolean first) {
-        ModuleConfig cfg = ModuleConfig.loadFromHookSide(ctx);
+    /**
+     * @return true 若已把一份配置应用到 native（或启动时明确无缓存而保持默认关闭）
+     */
+    private static boolean applyConfig(Context ctx, boolean first) {
+        ModuleConfig.HookLoad load = ModuleConfig.loadForHook(ctx);
+        if (!load.present) {
+            if (!first && sConfigApplied) {
+                // 通道失败且无新数据：保留内存中已生效配置，绝不降级为 mode=0
+                XposedBridge.log("[ImeHook] config unavailable, keep last applied");
+                return false;
+            }
+            XposedBridge.log("[ImeHook] no config yet (provider+cache miss)"
+                    + (first ? " (startup)" : " (reload)"));
+            if (first) sExitMark = "";
+            return false;
+        }
+
+        ModuleConfig cfg = load.config;
         if (sNativeLoaded) {
             try {
                 NativeBridge.nativeConfigure(cfg.mode, cfg.slot, cfg.table);
             } catch (Throwable t) {
                 XposedBridge.log("[ImeHook] configure failed: " + t);
             }
-            // 偏移表：启动时读入一次，配置/偏移表变化时同步更新；空则 native 回落内置兜底表
             try {
-                NativeBridge.nativeSetTargets(ModuleConfig.loadTargets(ctx));
+                NativeBridge.nativeSetTargets(load.targets);
             } catch (Throwable t) {
                 XposedBridge.log("[ImeHook] setTargets failed: " + t);
             }
@@ -138,20 +148,23 @@ public class HookEntry implements IXposedHookLoadPackage {
             }
         }
         sDiag = cfg.diag;
+        sConfigApplied = true;
+        String src = load.fromProvider ? "provider" : "cache";
         XposedBridge.log("[ImeHook] configured: mode=" + cfg.mode + " slot=" + cfg.slot
                 + " tableLen=" + cfg.table.length() + " diag=" + cfg.diag
-                + " diagc=" + cfg.diagContent
+                + " diagc=" + cfg.diagContent + " src=" + src
+                + " cache=" + load.cachePath
                 + (first ? " (startup)" : " (reload)"));
-        if (!first) {
-            pushLog(ctx, "[baseline] config applied mode=" + cfg.mode + " slot=" + cfg.slot
-                    + " tableLen=" + cfg.table.length() + " diag=" + cfg.diag
-                    + " diagc=" + cfg.diagContent);
-        }
+        pushLog(ctx, "[baseline] config applied mode=" + cfg.mode + " slot=" + cfg.slot
+                + " tableLen=" + cfg.table.length() + " diag=" + cfg.diag
+                + " diagc=" + cfg.diagContent + " src=" + src
+                + " cache=" + load.cachePath
+                + (first ? " (startup)" : " (reload)"));
 
         String mark = cfg.exit;
         if (first) {
             sExitMark = mark;
-            return;
+            return true;
         }
         if (!mark.isEmpty() && !mark.equals(sExitMark)) {
             sExitMark = mark;
@@ -165,63 +178,83 @@ public class HookEntry implements IXposedHookLoadPackage {
                 Process.killProcess(Process.myPid());
             }).start();
         }
+        return true;
     }
 
     private static void observeConfig(final Context ctx) {
-        HandlerThread t = new HandlerThread("imehook-config");
-        t.start();
-        final Handler h = new Handler(t.getLooper());
-        h.post(new Runnable() {
-            private long last = Long.MIN_VALUE;
-            private int tick = 0;
+        HandlerThread thread = new HandlerThread("imehook-config");
+        thread.start();
+        final Handler h = new Handler(thread.getLooper());
 
+        ContentObserver observer = new ContentObserver(h) {
+            @Override
+            public void onChange(boolean selfChange) {
+                applyConfig(ctx, false);
+            }
+        };
+        try {
+            ctx.getContentResolver().registerContentObserver(
+                    ModuleConfig.CONFIG_URI, true, observer);
+            ctx.getContentResolver().registerContentObserver(
+                    ModuleConfig.TARGETS_URI, true, observer);
+        } catch (Throwable e) {
+            XposedBridge.log("[ImeHook] register ContentObserver failed: " + e);
+        }
+
+        // 详细日志只在用户开启后才有数据，每 3 秒排空一次；与配置变更解耦
+        h.post(new Runnable() {
             @Override
             public void run() {
-                long v = ModuleConfig.configVersion(ctx);
-                if (last == Long.MIN_VALUE) {
-                    last = v;
-                } else if (v != last) {
-                    last = v;
-                    applyConfig(ctx, false);
-                }
-                // 详细日志只在用户开启后才有数据，每 3 秒排空一次；排空与落盘都在后台线程
-                if (sDiag) {
-                    if (++tick >= 3) {
-                        tick = 0;
-                        drainDiag(ctx);
-                    }
-                } else {
-                    tick = 0;
-                }
-                h.postDelayed(this, 1000);
+                if (sDiag) drainDiag(ctx);
+                h.postDelayed(this, 3000);
             }
         });
     }
 
-    /** 从模块 APK 中解压 native 库到目标 App 私有目录后加载。 */
+    /**
+     * 从模块 APK 解压 native 库到目标 App 私有目录后加载。
+     * Provider 不可用时回落扫描已缓存的 libimehook-*.so（上次成功解压留下的）。
+     */
     private static void loadNative(Context ctx) throws Exception {
         if (sNativeLoaded) return;
+        File dir = ModuleConfig.hookCacheDir(ctx);
+        if (!dir.exists()) dir.mkdirs();
+
         String apk = ModuleConfig.moduleApkPath(ctx);
-        if (apk == null) throw new IllegalStateException("module apk path unavailable");
-        // 文件名带上 APK 修改时间：模块升级后自动换新库，避免加载旧缓存
-        File dst = new File(ctx.getFilesDir(),
-                "imehook/libimehook-" + new File(apk).lastModified() + ".so");
-        if (!dst.exists()) {
-            File parent = dst.getParentFile();
-            if (parent != null) parent.mkdirs();
-            try (ZipFile zip = new ZipFile(apk)) {
-                ZipEntry entry = zip.getEntry(LIB_ZIP_ENTRY);
-                if (entry == null) throw new IllegalStateException(LIB_ZIP_ENTRY + " not in module apk");
-                try (InputStream in = zip.getInputStream(entry);
-                     FileOutputStream out = new FileOutputStream(dst)) {
-                    byte[] buf = new byte[8192];
-                    int n;
-                    while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+        File dst;
+        if (apk != null) {
+            dst = new File(dir, "libimehook-" + new File(apk).lastModified() + ".so");
+            if (!dst.exists()) {
+                try (ZipFile zip = new ZipFile(apk)) {
+                    ZipEntry entry = zip.getEntry(LIB_ZIP_ENTRY);
+                    if (entry == null) throw new IllegalStateException(LIB_ZIP_ENTRY + " not in module apk");
+                    try (InputStream in = zip.getInputStream(entry);
+                         FileOutputStream out = new FileOutputStream(dst)) {
+                        byte[] buf = new byte[8192];
+                        int n;
+                        while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                    }
                 }
             }
+        } else {
+            dst = newestCachedSo(dir);
+            if (dst == null) {
+                throw new IllegalStateException("module apk path unavailable and no cached so");
+            }
+            XposedBridge.log("[ImeHook] apk path unavailable, loading cached so: " + dst.getName());
         }
         System.load(dst.getAbsolutePath());
         sNativeLoaded = true;
+    }
+
+    private static File newestCachedSo(File dir) {
+        File[] files = dir.listFiles((d, name) -> name.startsWith("libimehook-") && name.endsWith(".so"));
+        if (files == null || files.length == 0) return null;
+        File best = files[0];
+        for (int i = 1; i < files.length; i++) {
+            if (files[i].lastModified() > best.lastModified()) best = files[i];
+        }
+        return best;
     }
 
     private static long versionCodeOf(Context ctx, String pkg) {
