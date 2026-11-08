@@ -526,31 +526,40 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
 
     // ---------------- 状态文字 ----------------
 
+    /**
+     * 状态框只保留「已应用 vs 界面未点应用」真正有用的信息：
+     * - 已应用：来自 config.txt，是目标进程实际会拿到的
+     * - 界面：当前 UI 选择（与已应用不同时才多写一行，避免重复）
+     * 方案键数 / 上次注入备注与上面重复或易误导，不再展示。
+     */
     fun updateStatus() {
         val cfg = ModuleConfig.load(ctx)
-        val sb = StringBuilder()
-        sb.append("已保存：").append(
-            when (cfg.mode) {
-                ModuleConfig.MODE_CUSTOM -> "注入自定义（未命中返回空）"
-                ModuleConfig.MODE_SLOT -> "切换内置槽"
-                else -> "原生"
+        val applied = when (cfg.mode) {
+            ModuleConfig.MODE_CUSTOM -> {
+                val note = store.injectedNote().ifEmpty { "自定义" }
+                "已应用：$note"
             }
-        )
-        if (cfg.mode == ModuleConfig.MODE_SLOT) sb.append("，槽 ").append(cfg.slot)
-        sb.append('\n')
-
-        if (selected.isNotEmpty()) {
-            val pr = parsed
-            if (pr != null) {
-                sb.append("方案 ").append(selected)
-                    .append("：").append(pr.scheme.table.size).append(" 键有候选\n")
-            } else {
-                sb.append("方案 ").append(selected).append("：解析失败\n")
-            }
+            ModuleConfig.MODE_SLOT -> "已应用：内置槽 ${cfg.slot}"
+            else -> "已应用：原生"
         }
-        val note = store.injectedNote()
-        if (note.isNotEmpty()) sb.append("上次注入：").append(note).append('\n')
-        status = sb.toString().trimEnd()
+        val pending = when (mode) {
+            ModuleConfig.MODE_CUSTOM ->
+                if (selected.isEmpty()) "界面：自定义（未选方案）"
+                else "界面：自定义 · $selected"
+            ModuleConfig.MODE_SLOT -> "界面：内置槽 $slot"
+            else -> "界面：原生"
+        }
+        // 粗略判断是否与已应用一致：自定义时看备注是否含方案名；槽位看数字；原生看 mode
+        val same = when (cfg.mode) {
+            ModuleConfig.MODE_OFF -> mode == ModuleConfig.MODE_OFF
+            ModuleConfig.MODE_SLOT -> mode == ModuleConfig.MODE_SLOT && slot == cfg.slot
+            ModuleConfig.MODE_CUSTOM ->
+                mode == ModuleConfig.MODE_CUSTOM &&
+                    selected.isNotEmpty() &&
+                    store.injectedNote().contains(selected)
+            else -> false
+        }
+        status = if (same) applied else "$applied\n$pending（未点应用设置）"
     }
 
     private fun toast(msg: String) {
