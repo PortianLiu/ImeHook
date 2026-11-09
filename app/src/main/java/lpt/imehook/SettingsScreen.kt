@@ -45,7 +45,6 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
@@ -372,52 +371,71 @@ private fun StatusCard(ui: SettingsUiState) {
 @Composable
 private fun DiagCard(ui: SettingsUiState, onExportLog: () -> Unit) {
     var showLog by remember { mutableStateOf(false) }
+    var dayMenu by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { ui.refreshLogDays() }
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    SectionTitle("诊断日志")
-                    Text(
-                        "详细日志记录按键级事件，默认关，仅本机保存",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+            SectionTitle("诊断日志")
+            Text(
+                "由于技术原因，当前暂时只能在 ImeHook 未被杀后台时记录日志。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Box {
+                OutlinedButton(onClick = {
+                    ui.refreshLogDays()
+                    dayMenu = true
+                }) {
+                    Text("日期 ${ui.selectedLogDay}")
                 }
-                Switch(checked = ui.diag, onCheckedChange = { ui.chooseDiag(it) })
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "同时记录展开出的拼音",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (ui.diag) MaterialTheme.colorScheme.onSurfaceVariant
-                    else MaterialTheme.colorScheme.outline,
-                    modifier = Modifier.weight(1f),
-                )
-                Switch(
-                    checked = ui.diagContent,
-                    onCheckedChange = { ui.chooseDiagContent(it) },
-                    enabled = ui.diag,
-                )
+                DropdownMenu(expanded = dayMenu, onDismissRequest = { dayMenu = false }) {
+                    val days = ui.logDays
+                    if (days.isEmpty()) {
+                        DropdownMenuItem(
+                            text = { Text("暂无日志") },
+                            onClick = { dayMenu = false },
+                        )
+                    } else {
+                        days.forEach { day ->
+                            DropdownMenuItem(
+                                text = { Text(day) },
+                                onClick = {
+                                    ui.selectLogDay(day)
+                                    dayMenu = false
+                                },
+                            )
+                        }
+                    }
+                }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { showLog = true }) { Text("查看") }
-                OutlinedButton(onClick = onExportLog) { Text("导出") }
+                OutlinedButton(onClick = {
+                    ui.refreshLogDays()
+                    showLog = true
+                }) { Text("查看") }
+                OutlinedButton(onClick = {
+                    ui.refreshLogDays()
+                    onExportLog()
+                }) { Text("导出") }
                 TextButton(onClick = { ui.clearLog() }) { Text("清空") }
             }
         }
     }
     if (showLog) {
-        val text = remember { ui.logText() }
+        val text = remember(ui.selectedLogDay, showLog) { ui.logText() }
         AlertDialog(
             onDismissRequest = { showLog = false },
             confirmButton = { TextButton(onClick = { showLog = false }) { Text("关闭") } },
-            title = { Text("诊断日志") },
+            title = { Text("诊断日志 ${ui.selectedLogDay}") },
             text = {
                 if (text.isEmpty()) {
-                    Text("暂无日志（目标进程启动或开关生效后才会写入）", style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        "该日暂无日志（目标进程启动并产生事件后才会写入）",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                 } else {
                     Text(
                         text,

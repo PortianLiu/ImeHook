@@ -20,11 +20,12 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
         private set
     var slot by mutableStateOf(saved.slot)
         private set
-    /** 详细诊断日志开关（按键级记录），默认关闭。 */
-    var diag by mutableStateOf(saved.diag)
+
+    /** 近 7 天内已有日志的日期（新→旧）。 */
+    var logDays by mutableStateOf(LogSink.listDays(ctx))
         private set
-    /** 二级开关：详细日志开启时，额外记录展开结果的拼音内容。 */
-    var diagContent by mutableStateOf(saved.diagContent)
+    /** 查看 / 导出所选日期。 */
+    var selectedLogDay by mutableStateOf(logDays.firstOrNull() ?: LogSink.today())
         private set
 
     var schemes by mutableStateOf(store.names())
@@ -464,13 +465,21 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
             cfg.table = pr.scheme.flat
             store.setActive(selected)
             store.setInjectedNote("方案 $selected（未命中返回空）")
+            val entries = pr.scheme.table.size
+            LogSink.append(
+                ctx,
+                "[app] apply mode=2 scheme=$selected tableEntries=$entries flatBytes=${cfg.table.length}",
+            )
         } else if (mode == ModuleConfig.MODE_SLOT) {
             store.setInjectedNote("所有调用固定到内置槽 $slot（未替换表）")
+            LogSink.append(ctx, "[app] apply mode=1 slot=$slot")
         } else {
             store.setInjectedNote("")
+            LogSink.append(ctx, "[app] apply mode=0")
         }
         cfg.publish(ctx)
         updateStatus()
+        refreshLogDays()
         toast("已应用，目标进程在运行时立即生效")
     }
 
@@ -481,7 +490,9 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
         cfg.publish(ctx)
         store.setInjectedNote("已还原原生（注入为运行时行为，APK 从未被修改）")
         mode = ModuleConfig.MODE_OFF
+        LogSink.append(ctx, "[app] restore mode=0")
         updateStatus()
+        refreshLogDays()
         toast("已还原为原生行为")
     }
 
@@ -489,38 +500,41 @@ class SettingsUiState(private val ctx: Context, private val store: SchemeStore) 
         val cfg = ModuleConfig.load(ctx)
         cfg.exit = System.currentTimeMillis().toString()
         cfg.publish(ctx)
+        LogSink.append(ctx, "[app] restart requested exit=${cfg.exit}")
         try {
             val am = ctx.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
             am.killBackgroundProcesses(TARGET_PKG)
         } catch (ignored: Throwable) {}
+        refreshLogDays()
         toast("已请求豆包输入法退出，再次点击输入框即重新加载")
     }
 
     // ---------------- 诊断日志 ----------------
 
-    fun chooseDiag(on: Boolean) {
-        val cfg = ModuleConfig.load(ctx)
-        cfg.diag = on
-        if (!on) cfg.diagContent = false  // 总开关关闭时联动收起二级开关
-        cfg.publish(ctx)
-        diag = on
-        if (!on) diagContent = false
-        toast(if (on) "已开启详细日志，目标进程将立即生效" else "已关闭详细日志")
+    fun refreshLogDays() {
+        val days = LogSink.listDays(ctx)
+        logDays = days
+        if (days.isEmpty()) {
+            selectedLogDay = LogSink.today()
+        } else if (selectedLogDay !in days) {
+            selectedLogDay = days.first()
+        }
     }
 
-    fun chooseDiagContent(on: Boolean) {
-        val cfg = ModuleConfig.load(ctx)
-        if (on && !cfg.diag) return  // 二级开关不能脱离详细日志单独开启
-        cfg.diagContent = on
-        cfg.publish(ctx)
-        diagContent = on
-        toast(if (on) "将记录展开的拼音内容，仅保存本机" else "已停止记录展开内容")
+    fun selectLogDay(day: String) {
+        selectedLogDay = day
     }
 
-    fun logText(): String = LogSink.tail(ctx, 200 * 1024)
+    fun logText(): String {
+        refreshLogDays()
+        return LogSink.readDay(ctx, selectedLogDay)
+    }
+
+    fun exportFileName(): String = "imehook-$selectedLogDay.log"
 
     fun clearLog() {
         LogSink.clear(ctx)
+        refreshLogDays()
         toast("已清空本机日志")
     }
 

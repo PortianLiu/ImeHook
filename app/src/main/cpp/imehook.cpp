@@ -89,38 +89,38 @@ static std::shared_ptr<const Table> g_table = std::make_shared<const Table>();
 using ExpandFn = SpVec (*)(void* scheme, const SpStr* key);
 static ExpandFn g_orig = nullptr;
 
-// ---------- 诊断 ----------
-// 常驻（始终开启）只有几个原子计数：热路径上一次 relaxed fetch_add，约 1~2ns。
-// 详细记录需用户在设置页手动开启；此时每次调用多两次 clock_gettime + 一次加锁写定长数组，
-// 仍不做 I/O、不拼字符串、不分配内存；落盘全部在后台线程完成。
-static std::atomic<bool> g_diag{false};
-// 二级开关：额外记录展开结果的拼音内容，仅在 g_diag 同时开启时生效。
-static std::atomic<bool> g_diagContent{false};
-
+// ---------- 诊断（始终开启）----------
+// 热路径：两次 clock_gettime + 无堆分配抄键/候选 + 短暂持锁写入环形缓冲。
+// 不做 I/O、不拼日志字符串；排空与落盘在后台线程。满则覆盖最旧并累计 dropped。
 static std::atomic<uint64_t> g_nConvert{0};
 static std::atomic<uint64_t> g_nCustomHit{0};
 static std::atomic<uint64_t> g_nMiss{0};
 
-constexpr size_t kValsCap = 96;  // 展开内容缓冲（逗号分隔的拼音候选，定长不分配）
+constexpr size_t kValsCap = 96;  // 展开内容缓冲（逗号分隔拼音，定长）
 
 struct DiagEvent {
     uint64_t tNs;       // 事件时刻（单调时钟）
-    uint32_t durNs;     // 本次 hook 调用耗时
-    uint16_t key;       // 原始按键字节（最多 2 个 ASCII 字符，低字节在前）
+    uint32_t durNs;     // 本次 hook 调用耗时（含目标自身）
+    uint16_t key;       // 最多 2 个 ASCII，低字节在前
     uint8_t  keyLen;
     uint8_t  mode;      // 0 直通 1 槽位 2 自定义
     uint8_t  slot;
-    uint8_t  kind;      // 0 直通 1 槽位改写 2 自定义命中 3 自定义未命中（返回空）
-    uint8_t  results;   // 返回候选数
-    char     vals[kValsCap];  // 展开内容（二级开关开启时才有）
+    uint8_t  kind;      // 0 直通 1 槽位 2 自定义命中 3 未命中空返回
+    uint8_t  results;   // 候选数（上限 255）
+    char     vals[kValsCap];
     uint8_t  valsLen;
 };
 
-constexpr size_t kDiagCap = 512;
+constexpr size_t kDiagCap = 1024;
 static std::mutex g_diagMutex;
 static DiagEvent g_diagBuf[kDiagCap];
-static size_t g_diagLen = 0;
+static size_t g_diagWrite = 0;   // 下一写入下标
+static size_t g_diagCount = 0;   // 当前条数 ≤ kDiagCap
 static uint64_t g_diagDropped = 0;
+
+// 最近一次安装尝试的摘要（供 nativeStats / 基线日志）
+static std::atomic<long> g_installVc{0};
+static char g_installHow[24] = "none";  // none / pending / version-table / signature-scan / unsupported
 
 static inline uint64_t nowNs() {
     timespec ts;
@@ -130,16 +130,22 @@ static inline uint64_t nowNs() {
 
 static void diagPush(const DiagEvent& e) {
     std::lock_guard<std::mutex> lock(g_diagMutex);
-    if (g_diagLen < kDiagCap) g_diagBuf[g_diagLen++] = e;
-    else g_diagDropped++;
+    if (g_diagCount == kDiagCap) {
+        // 环形：覆盖最旧，保留最近事件（调试高峰期更有用）
+        g_diagDropped++;
+    } else {
+        g_diagCount++;
+    }
+    g_diagBuf[g_diagWrite] = e;
+    g_diagWrite = (g_diagWrite + 1) % kDiagCap;
 }
 
-// 只读 SSO 短串的前两个字节，避免为记录日志构造 std::string。
+// 只读 SSO 短串前两字节，避免为日志构造 std::string。
 static void packKey(const SpStr* s, uint16_t& out, uint8_t& len) {
     const auto* r = reinterpret_cast<const unsigned char*>(s->raw);
     out = 0;
     len = 0;
-    if ((r[0] & 1u) != 0) return;  // 非短串（实际不会出现）不记录内容
+    if ((r[0] & 1u) != 0) return;  // 非短串不记内容
     size_t n = r[0] >> 1;
     if (n > 2) n = 2;
     len = static_cast<uint8_t>(n);
@@ -147,17 +153,28 @@ static void packKey(const SpStr* s, uint16_t& out, uint8_t& len) {
     if (n > 1) out |= static_cast<uint16_t>(r[2]) << 8;
 }
 
-// 把展开结果的候选拼音拼成逗号分隔串抄入定长缓冲，只保留可打印 ASCII。
-// 本函数的候选均为拼音音节（非汉字），且在同一调用内抄出，无生命周期问题。
+// 无堆分配抄候选拼音（SSO / 堆串都直接读字节），只留可打印 ASCII。
 static void packVals(const SpVec& v, char* out, uint8_t& outLen) {
     size_t n = (v.e > v.b) ? static_cast<size_t>(v.e - v.b) : 0;
-    if (n > 8) n = 8;  // 最多抄 8 个候选
+    if (n > 8) n = 8;
     size_t w = 0;
     for (size_t i = 0; i < n && w < kValsCap - 1; i++) {
-        std::string s = spToStr(v.b + i);
         if (i > 0) out[w++] = ',';
-        for (char ch : s) {
-            if (w >= kValsCap - 1) break;
+        const auto* r = reinterpret_cast<const unsigned char*>(v.b[i].raw);
+        const char* data = nullptr;
+        size_t len = 0;
+        if ((r[0] & 1u) == 0) {
+            len = r[0] >> 1;
+            data = reinterpret_cast<const char*>(r + 1);
+        } else {
+            uint64_t L = 0;
+            std::memcpy(&L, r + 8, 8);
+            len = static_cast<size_t>(L);
+            std::memcpy(&data, r + 16, 8);
+        }
+        if (data == nullptr) continue;
+        for (size_t j = 0; j < len && w < kValsCap - 1; j++) {
+            char ch = data[j];
             out[w++] = (ch >= 32 && ch < 127) ? ch : '?';
         }
     }
@@ -168,17 +185,7 @@ static void packVals(const SpVec& v, char* out, uint8_t& outLen) {
 static SpVec expandHook(void* scheme, const SpStr* key) {
     const int mode = g_mode.load(std::memory_order_relaxed);
     g_nConvert.fetch_add(1, std::memory_order_relaxed);
-    const bool diag = g_diag.load(std::memory_order_relaxed);
-    const uint64_t t0 = diag ? nowNs() : 0;
-
-    // 前几次调用打点，便于确认钩子确实命中、以及改写后的 id 是否生效
-    static std::atomic<int> s_calls{0};
-    int n = s_calls.fetch_add(1, std::memory_order_relaxed);
-    if (n < 3) {
-        LOGI("call#%d mode=%d origId=%d slot=%d key=%s", n, mode,
-             static_cast<int>(*static_cast<unsigned char*>(scheme)),
-             g_slot.load(std::memory_order_relaxed), spToStr(key).c_str());
-    }
+    const uint64_t t0 = nowNs();
 
     uint8_t kind = 0;
     SpVec r;
@@ -198,7 +205,6 @@ static SpVec expandHook(void* scheme, const SpStr* key) {
             kind = 2;
             g_nCustomHit.fetch_add(1, std::memory_order_relaxed);
         } else {
-            // 未覆盖的键不兜底：返回空数组
             r = SpVec{nullptr, nullptr, nullptr};
             kind = 3;
             g_nMiss.fetch_add(1, std::memory_order_relaxed);
@@ -207,19 +213,16 @@ static SpVec expandHook(void* scheme, const SpStr* key) {
         r = g_orig(scheme, key);
     }
 
-    if (diag) {
-        DiagEvent e{};
-        e.tNs = t0;
-        e.durNs = static_cast<uint32_t>(nowNs() - t0);
-        e.mode = static_cast<uint8_t>(mode);
-        e.slot = static_cast<uint8_t>(g_slot.load(std::memory_order_relaxed));
-        e.kind = kind;
-        e.results = (r.e > r.b) ? static_cast<uint8_t>(std::min<size_t>(r.e - r.b, 255)) : 0;
-        packKey(key, e.key, e.keyLen);
-        e.valsLen = 0;
-        if (g_diagContent.load(std::memory_order_relaxed)) packVals(r, e.vals, e.valsLen);
-        diagPush(e);
-    }
+    DiagEvent e{};
+    e.tNs = t0;
+    e.durNs = static_cast<uint32_t>(nowNs() - t0);
+    e.mode = static_cast<uint8_t>(mode);
+    e.slot = static_cast<uint8_t>(g_slot.load(std::memory_order_relaxed));
+    e.kind = kind;
+    e.results = (r.e > r.b) ? static_cast<uint8_t>(std::min<size_t>(r.e - r.b, 255)) : 0;
+    packKey(key, e.key, e.keyLen);
+    packVals(r, e.vals, e.valsLen);
+    diagPush(e);
     return r;
 }
 
@@ -342,10 +345,23 @@ static std::mutex g_installMutex;
 static std::atomic<bool> g_installed{false};
 static std::atomic<bool> g_unsupported{false};
 
+static void setInstallHow(const char* how) {
+    // 单写者（install 锁内），读侧只用于诊断字符串，无需原子
+    size_t n = 0;
+    while (how[n] != 0 && n + 1 < sizeof(g_installHow)) {
+        g_installHow[n] = how[n];
+        n++;
+    }
+    g_installHow[n] = 0;
+}
+
 static bool tryInstall(long versionCode) {
     if (g_installed.load() || g_unsupported.load()) return g_installed.load();
     std::lock_guard<std::mutex> lock(g_installMutex);
     if (g_installed.load()) return true;
+
+    g_installVc.store(versionCode, std::memory_order_relaxed);
+    setInstallHow("pending");
 
     g_base = 0;
     g_textStart = 0;
@@ -395,6 +411,7 @@ static bool tryInstall(long versionCode) {
 
     if (addr == nullptr) {
         LOGE("target not found (versionCode=%ld), unsupported", versionCode);
+        setInstallHow("unsupported");
         g_unsupported = true;
         return false;
     }
@@ -402,6 +419,7 @@ static bool tryInstall(long versionCode) {
     DobbyHook(addr, reinterpret_cast<dobby_dummy_func_t>(&expandHook),
               reinterpret_cast<dobby_dummy_func_t*>(&g_orig));
     g_installed = g_orig != nullptr;
+    setInstallHow(how);
     LOGI("hook %s at %p (base=0x%zx by=%s)",
          g_installed.load() ? "installed" : "FAILED", addr, g_base, how);
     return g_installed.load();
@@ -548,58 +566,54 @@ Java_lpt_imehook_NativeBridge_nativeSetTargets(JNIEnv* env, jclass, jstring targ
 }
 
 // ---------- 诊断 JNI ----------
-extern "C" JNIEXPORT void JNICALL
-Java_lpt_imehook_NativeBridge_nativeSetDiag(JNIEnv*, jclass, jboolean on) {
-    g_diag.store(on == JNI_TRUE, std::memory_order_release);
-    if (on != JNI_TRUE) {
-        // 关闭时丢掉未排空的详细日志，避免残留按键内容
-        std::lock_guard<std::mutex> lock(g_diagMutex);
-        g_diagLen = 0;
-        g_diagDropped = 0;
-    }
-}
-
-// 二级开关：展开内容记录。只翻转标志，不动缓冲（内容只在新事件开启时写入）。
-extern "C" JNIEXPORT void JNICALL
-Java_lpt_imehook_NativeBridge_nativeSetDiagContent(JNIEnv*, jclass, jboolean on) {
-    g_diagContent.store(on == JNI_TRUE, std::memory_order_release);
-}
-
-/** 取走并清空详细日志缓冲；返回空串表示没有新事件。 */
+/** 取走并清空按键事件缓冲；返回空串表示没有新事件。持锁只做拷贝，拼串在锁外。 */
 extern "C" JNIEXPORT jstring JNICALL
 Java_lpt_imehook_NativeBridge_nativeDrainDiag(JNIEnv* env, jclass) {
-    std::string out;
-    uint64_t dropped;
+    // 堆上临时缓冲，避免 ~100KB 栈分配
+    auto local = std::unique_ptr<DiagEvent[]>(new DiagEvent[kDiagCap]);
+    size_t n = 0;
+    uint64_t dropped = 0;
     {
         std::lock_guard<std::mutex> lock(g_diagMutex);
         dropped = g_diagDropped;
         g_diagDropped = 0;
-        char keybuf[3] = {0, 0, 0};
-        for (size_t i = 0; i < g_diagLen; i++) {
-            const DiagEvent& e = g_diagBuf[i];
-            keybuf[0] = (e.keyLen > 0) ? static_cast<char>(e.key & 0xFF) : 0;
-            keybuf[1] = (e.keyLen > 1) ? static_cast<char>((e.key >> 8) & 0xFF) : 0;
-            out += "t=";
-            out += std::to_string(e.tNs);
-            out += " d=";
-            out += std::to_string(e.durNs);
-            out += " m=";
-            out += std::to_string(e.mode);
-            out += " s=";
-            out += std::to_string(e.slot);
-            out += " k=";
-            out += keybuf;
-            out += " r=";
-            out += std::to_string(e.results);
-            out += " x=";
-            out += std::to_string(e.kind);
-            if (e.valsLen > 0) {
-                out += " v=";
-                out.append(e.vals, e.valsLen);
-            }
-            out += '\n';
+        n = g_diagCount;
+        // 最旧在 write 位置（满时）或 write-count（未满时）
+        size_t start = (g_diagWrite + kDiagCap - g_diagCount) % kDiagCap;
+        for (size_t i = 0; i < n; i++) {
+            local[i] = g_diagBuf[(start + i) % kDiagCap];
         }
-        g_diagLen = 0;
+        g_diagCount = 0;
+        g_diagWrite = 0;
+    }
+
+    std::string out;
+    out.reserve(n * 64);
+    char keybuf[3] = {0, 0, 0};
+    for (size_t i = 0; i < n; i++) {
+        const DiagEvent& e = local[i];
+        keybuf[0] = (e.keyLen > 0) ? static_cast<char>(e.key & 0xFF) : 0;
+        keybuf[1] = (e.keyLen > 1) ? static_cast<char>((e.key >> 8) & 0xFF) : 0;
+        keybuf[2] = 0;
+        out += "t=";
+        out += std::to_string(e.tNs);
+        out += " d=";
+        out += std::to_string(e.durNs);
+        out += " m=";
+        out += std::to_string(e.mode);
+        out += " s=";
+        out += std::to_string(e.slot);
+        out += " k=";
+        out += keybuf;
+        out += " r=";
+        out += std::to_string(e.results);
+        out += " x=";
+        out += std::to_string(e.kind);
+        if (e.valsLen > 0) {
+            out += " v=";
+            out.append(e.vals, e.valsLen);
+        }
+        out += '\n';
     }
     if (dropped > 0) {
         out += "dropped=";
@@ -609,14 +623,25 @@ Java_lpt_imehook_NativeBridge_nativeDrainDiag(JNIEnv* env, jclass) {
     return env->NewStringUTF(out.c_str());
 }
 
-/** 常驻计数快照：钩子是否装上、调用/命中/未命中次数。 */
+/** 常驻计数与安装摘要快照。 */
 extern "C" JNIEXPORT jstring JNICALL
 Java_lpt_imehook_NativeBridge_nativeStats(JNIEnv* env, jclass) {
+    auto tbl = std::atomic_load(&g_table);
     std::string s;
     s += "installed=";
     s += g_installed.load() ? "1" : "0";
     s += " unsupported=";
     s += g_unsupported.load() ? "1" : "0";
+    s += " how=";
+    s += g_installHow;
+    s += " vc=";
+    s += std::to_string(static_cast<long long>(g_installVc.load()));
+    s += " mode=";
+    s += std::to_string(g_mode.load());
+    s += " slot=";
+    s += std::to_string(g_slot.load());
+    s += " table=";
+    s += std::to_string(tbl ? tbl->size() : 0);
     s += " converts=";
     s += std::to_string(static_cast<unsigned long long>(g_nConvert.load()));
     s += " custom=";

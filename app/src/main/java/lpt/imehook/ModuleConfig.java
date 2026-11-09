@@ -65,10 +65,6 @@ public final class ModuleConfig {
      * （自杀不需要 root，也不依赖 su）。
      */
     public String exit = "";
-    /** 详细诊断日志：默认关闭，用户在设置页手动开启后才记录按键级事件。 */
-    public boolean diag = false;
-    /** 二级开关：详细日志开启时，额外记录展开结果的拼音内容。 */
-    public boolean diagContent = false;
 
     private ModuleConfig() {
     }
@@ -247,8 +243,6 @@ public final class ModuleConfig {
         StringBuilder sb = new StringBuilder();
         sb.append("mode=").append(mode).append('\n');
         sb.append("slot=").append(slot).append('\n');
-        sb.append("diag=").append(diag ? 1 : 0).append('\n');
-        sb.append("diagc=").append(diagContent ? 1 : 0).append('\n');
         sb.append("exit=").append(exit).append('\n');
         sb.append(HEADER_TABLE).append('\n');
         sb.append(table);
@@ -275,15 +269,10 @@ public final class ModuleConfig {
                 case "slot":
                     slot = parseInt(v, slot);
                     break;
-                case "diag":
-                    diag = parseInt(v, 0) == 1;
-                    break;
-                case "diagc":
-                    diagContent = parseInt(v, 0) == 1;
-                    break;
                 case "exit":
                     exit = v;
                     break;
+                // 旧版 diag/diagc 键忽略：按键日志已常开，不再落配置
                 default:
                     break;
             }

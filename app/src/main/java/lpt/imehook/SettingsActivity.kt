@@ -61,7 +61,7 @@ class SettingsActivity : ComponentActivity() {
                     ui,
                     onImport = { openDoc.launch(arrayOf("*/*")) },
                     onExport = { createDoc.launch(ui.exportTemplateName()) },
-                    onExportLog = { createLogDoc.launch("imehook-log.txt") },
+                    onExportLog = { createLogDoc.launch(ui.exportFileName()) },
                 )
             }
         }

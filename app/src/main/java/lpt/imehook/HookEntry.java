@@ -31,12 +31,11 @@ public class HookEntry implements IXposedHookLoadPackage {
     private static Context sCtx = null;
     /** 启动时读到的重启信号；之后只有值变化才认为自己被要求退出，避免自杀重启死循环。 */
     private static volatile String sExitMark = null;
-    /** 详细日志开关（由设置页控制）；只有这里为 true 时才把按键级事件排空出去。 */
-    private static volatile boolean sDiag = false;
     /** 是否已成功把一份配置灌进 native（含镜像懒加载）；失败重载时据此决定是否跳过。 */
     private static volatile boolean sConfigApplied = false;
+    private static volatile String sProcessName = "";
 
-    /** 常驻日志：安装/配置/异常等低频事件，始终开启。必须走 unstable，避免拖死输入法进程。 */
+    /** 基线 / 排空日志：必须走 unstable，避免拖死输入法进程。 */
     private static void pushLog(Context ctx, String lines) {
         ModuleConfig.appendLogUnstable(ctx, lines);
     }
@@ -53,8 +52,9 @@ public class HookEntry implements IXposedHookLoadPackage {
     @Override
     public void handleLoadPackage(final XC_LoadPackage.LoadPackageParam lpparam) {
         if (!TARGET.equals(lpparam.packageName)) return;
+        sProcessName = lpparam.processName != null ? lpparam.processName : lpparam.packageName;
 
-        XposedBridge.log("[ImeHook] loaded into " + lpparam.packageName + " (" + lpparam.processName + ")");
+        XposedBridge.log("[ImeHook] loaded into " + lpparam.packageName + " (" + sProcessName + ")");
 
         XposedHelpers.findAndHookMethod(Application.class, "onCreate", new XC_MethodHook() {
             @Override
@@ -63,7 +63,7 @@ public class HookEntry implements IXposedHookLoadPackage {
                     init((Context) param.thisObject);
                 } catch (Throwable t) {
                     XposedBridge.log("[ImeHook] init failed: " + t);
-                    pushLog(sCtx, "[error] init failed: " + t);
+                    pushLog(sCtx, "[error] init failed proc=" + sProcessName + " " + t);
                 }
             }
         });
@@ -75,7 +75,7 @@ public class HookEntry implements IXposedHookLoadPackage {
             loadNative(sCtx);
         } catch (Throwable t) {
             XposedBridge.log("[ImeHook] load native failed: " + t);
-            pushLog(sCtx, "[error] load native failed: " + t);
+            pushLog(sCtx, "[error] load native failed proc=" + sProcessName + " " + t);
         }
 
         long vc = versionCodeOf(sCtx, TARGET);
@@ -89,12 +89,11 @@ public class HookEntry implements IXposedHookLoadPackage {
                 installed = NativeBridge.nativeTryInstall(vc);
             } catch (Throwable t) {
                 XposedBridge.log("[ImeHook] install failed: " + t);
-                pushLog(sCtx, "[error] install failed: " + t);
+                pushLog(sCtx, "[error] install failed proc=" + sProcessName + " " + t);
             }
         }
         XposedBridge.log("[ImeHook] versionCode=" + vc + " nativeLoaded=" + sNativeLoaded
                 + " installedNow=" + installed);
-        // 常驻基线：装了哪个版本、钩子是否装上都记一条，与详细日志开关无关
         String stats = "";
         if (sNativeLoaded) {
             try {
@@ -102,12 +101,12 @@ public class HookEntry implements IXposedHookLoadPackage {
             } catch (Throwable ignored) {
             }
         }
-        pushLog(sCtx, "[baseline] versionCode=" + vc + " nativeLoaded=" + sNativeLoaded
+        pushLog(sCtx, "[baseline] init proc=" + sProcessName
+                + " versionCode=" + vc + " nativeLoaded=" + sNativeLoaded
                 + " installedNow=" + installed + " " + stats);
 
         // libshell.so 可能在 Application.onCreate 之后才加载，钩 loadLibrary 做延迟重试
         hookLoadLibraryRetry(vc);
-        // 模块改配置后经 ContentObserver 立即生效；详细日志仍按需定时排空
         observeConfig(sCtx);
     }
 
@@ -118,48 +117,59 @@ public class HookEntry implements IXposedHookLoadPackage {
         ModuleConfig.HookLoad load = ModuleConfig.loadForHook(ctx);
         if (!load.present) {
             if (!first && sConfigApplied) {
-                // 通道失败且无新数据：保留内存中已生效配置，绝不降级为 mode=0
                 XposedBridge.log("[ImeHook] config unavailable, keep last applied");
+                pushLog(ctx, "[baseline] config unavailable keep-last proc=" + sProcessName);
                 return false;
             }
             XposedBridge.log("[ImeHook] no config yet (provider+cache miss)"
                     + (first ? " (startup)" : " (reload)"));
+            pushLog(ctx, "[baseline] no config yet proc=" + sProcessName
+                    + (first ? " startup" : " reload"));
             if (first) sExitMark = "";
             return false;
         }
 
         ModuleConfig cfg = load.config;
+        int tableEntries = 0;
         if (sNativeLoaded) {
             try {
                 NativeBridge.nativeConfigure(cfg.mode, cfg.slot, cfg.table);
             } catch (Throwable t) {
                 XposedBridge.log("[ImeHook] configure failed: " + t);
+                pushLog(ctx, "[error] configure failed proc=" + sProcessName + " " + t);
             }
             try {
                 NativeBridge.nativeSetTargets(load.targets);
             } catch (Throwable t) {
                 XposedBridge.log("[ImeHook] setTargets failed: " + t);
+                pushLog(ctx, "[error] setTargets failed proc=" + sProcessName + " " + t);
             }
             try {
-                NativeBridge.nativeSetDiag(cfg.diag);
-                NativeBridge.nativeSetDiagContent(cfg.diagContent);
-            } catch (Throwable t) {
-                XposedBridge.log("[ImeHook] setDiag failed: " + t);
+                String st = NativeBridge.nativeStats();
+                // table= 字段来自 native 解析后的条目数
+                int idx = st.indexOf("table=");
+                if (idx >= 0) {
+                    int end = st.indexOf(' ', idx + 6);
+                    String num = end < 0 ? st.substring(idx + 6) : st.substring(idx + 6, end);
+                    tableEntries = Integer.parseInt(num.trim());
+                }
+            } catch (Throwable ignored) {
             }
         }
-        sDiag = cfg.diag;
         sConfigApplied = true;
         String src = load.fromProvider ? "provider" : "cache";
         XposedBridge.log("[ImeHook] configured: mode=" + cfg.mode + " slot=" + cfg.slot
-                + " tableLen=" + cfg.table.length() + " diag=" + cfg.diag
-                + " diagc=" + cfg.diagContent + " src=" + src
-                + " cache=" + load.cachePath
+                + " tableLen=" + cfg.table.length() + " tableEntries=" + tableEntries
+                + " src=" + src + " cache=" + load.cachePath
                 + (first ? " (startup)" : " (reload)"));
-        pushLog(ctx, "[baseline] config applied mode=" + cfg.mode + " slot=" + cfg.slot
-                + " tableLen=" + cfg.table.length() + " diag=" + cfg.diag
-                + " diagc=" + cfg.diagContent + " src=" + src
+        pushLog(ctx, "[baseline] config applied proc=" + sProcessName
+                + " mode=" + cfg.mode + " slot=" + cfg.slot
+                + " tableBytes=" + cfg.table.length()
+                + " tableEntries=" + tableEntries
+                + " targetsBytes=" + (load.targets != null ? load.targets.length() : 0)
+                + " src=" + src
                 + " cache=" + load.cachePath
-                + (first ? " (startup)" : " (reload)"));
+                + (first ? " startup" : " reload"));
 
         String mark = cfg.exit;
         if (first) {
@@ -169,7 +179,9 @@ public class HookEntry implements IXposedHookLoadPackage {
         if (!mark.isEmpty() && !mark.equals(sExitMark)) {
             sExitMark = mark;
             XposedBridge.log("[ImeHook] restart requested, killing own process");
-            pushLog(ctx, "[baseline] restart requested by user");
+            pushLog(ctx, "[baseline] restart requested by user proc=" + sProcessName);
+            // 先尽量排空按键缓冲再退出
+            drainDiag(ctx);
             new Thread(() -> {
                 try {
                     Thread.sleep(200);
@@ -199,14 +211,15 @@ public class HookEntry implements IXposedHookLoadPackage {
                     ModuleConfig.TARGETS_URI, true, observer);
         } catch (Throwable e) {
             XposedBridge.log("[ImeHook] register ContentObserver failed: " + e);
+            pushLog(ctx, "[error] register ContentObserver failed: " + e);
         }
 
-        // 详细日志只在用户开启后才有数据，每 3 秒排空一次；与配置变更解耦
+        // 按键事件始终有数据；每 2 秒排空一次，写盘在模块进程
         h.post(new Runnable() {
             @Override
             public void run() {
-                if (sDiag) drainDiag(ctx);
-                h.postDelayed(this, 3000);
+                drainDiag(ctx);
+                h.postDelayed(this, 2000);
             }
         });
     }
@@ -274,10 +287,15 @@ public class HookEntry implements IXposedHookLoadPackage {
                     if (!sNativeLoaded) loadNative(sCtx);
                     if (NativeBridge.nativeTryInstall(versionCode)) {
                         sLazyInstalled = true;
-                        // 装上了才把配置灌进去（libshell 之前配置是空转）
                         applyConfig(sCtx, false);
                         XposedBridge.log("[ImeHook] hook installed after libshell loaded");
-                        pushLog(sCtx, "[baseline] hook installed after libshell loaded " + NativeBridge.nativeStats());
+                        String stats = "";
+                        try {
+                            stats = NativeBridge.nativeStats();
+                        } catch (Throwable ignored) {
+                        }
+                        pushLog(sCtx, "[baseline] hook installed after libshell proc="
+                                + sProcessName + " " + stats);
                     }
                 } catch (Throwable ignored) {
                 }
@@ -288,6 +306,7 @@ public class HookEntry implements IXposedHookLoadPackage {
                     ClassLoader.class, String.class, retry);
         } catch (Throwable t) {
             XposedBridge.log("[ImeHook] hook loadLibrary0(ClassLoader,String) failed: " + t);
+            pushLog(sCtx, "[error] hook loadLibrary0 failed: " + t);
         }
         try {
             XposedHelpers.findAndHookMethod(Runtime.class, "loadLibrary0",
