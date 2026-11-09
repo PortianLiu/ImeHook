@@ -21,8 +21,8 @@ android {
         applicationId = "lpt.imehook"
         minSdk = 27
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.0.0"
+        versionCode = 3
+        versionName = "1.1.0"
 
         ndk {
             // 目标 App 仅 arm64

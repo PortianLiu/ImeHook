@@ -461,6 +461,11 @@ private fun AboutCard() {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("说明", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             Text(
+                "当前支持的目标 App 版本：豆包输入法 ==1.5.4",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
                 "注入只在豆包输入法进程内生效，不改 APK。「应用设置」后即时同步；模块被杀仍可用目标侧缓存。" +
                     "推断槽位身份未经验证。自定义表未覆盖的键返回空。",
                 style = MaterialTheme.typography.bodySmall,
